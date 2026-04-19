@@ -1,0 +1,11 @@
+# Migrations
+
+Alembic migration files go here.
+
+## Setup
+```bash
+pip install alembic
+alembic init migrations
+alembic revision --autogenerate -m "initial schema"
+alembic upgrade head
+```
