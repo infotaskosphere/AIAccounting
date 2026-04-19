@@ -1,6 +1,7 @@
 // src/components/Topbar.jsx
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
+import finixLogo from '../assets/logo.png'
 import {
   LayoutDashboard, BookOpen, ArrowLeftRight, FileText,
   Users, Building2, Settings, Bell, ChevronDown,
@@ -88,7 +89,7 @@ export default function Topbar() {
   return (
     <header className="topbar">
       <div className="tb-logo" onClick={() => goTo('/')} style={{ cursor:'pointer' }}>
-        <img src="/src/assets/logo.png" alt="Finix" style={{ height: 32, width: 'auto', display: 'block' }} />
+        <img src={finixLogo} alt="Finix" style={{ height: 32, width: 'auto', display: 'block' }} />
       </div>
 
       <nav className="tb-nav" ref={navRef}>
