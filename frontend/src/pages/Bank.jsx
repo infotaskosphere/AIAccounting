@@ -1,22 +1,33 @@
 // src/pages/Bank.jsx
 import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, CheckCircle, X, Zap, AlertCircle, RefreshCw } from 'lucide-react'
+import { Upload, CheckCircle, X, Zap, AlertCircle, RefreshCw, FileText } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { mockBankTransactions } from '../api/mockData'
-import { fmt } from '../utils/format'
+import { fmt, fmtDate } from '../utils/format'
 
-const statusColor = {
-  matched:         'badge-green',
-  manually_matched:'badge-green',
-  unmatched:       'badge-amber',
-  ignored:         'badge-gray',
+const statusBadge = {
+  matched:          'badge-green',
+  manually_matched: 'badge-green',
+  unmatched:        'badge-amber',
+  ignored:          'badge-gray',
 }
+
+const ConfBar = ({ value, color }) => (
+  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+    <div className="progress-wrap" style={{ flex: 1, height: 5 }}>
+      <div className="progress-fill" style={{ width: `${value * 100}%`, background: color }} />
+    </div>
+    <span style={{ fontSize: '0.72rem', fontWeight: 700, color, minWidth: 32 }}>
+      {(value * 100).toFixed(0)}%
+    </span>
+  </div>
+)
 
 export default function Bank() {
   const [transactions, setTransactions] = useState(mockBankTransactions)
-  const [filter, setFilter] = useState('all')
-  const [loading, setLoading] = useState(false)
+  const [filter, setFilter]             = useState('all')
+  const [loading, setLoading]           = useState(false)
   const [uploadedFile, setUploadedFile] = useState(null)
 
   const onDrop = useCallback(files => {
@@ -27,9 +38,13 @@ export default function Bank() {
   }, [])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop, accept: { 'text/csv': ['.csv'], 'application/vnd.ms-excel': ['.xls'],
+    onDrop,
+    accept: {
+      'text/csv':            ['.csv'],
+      'application/vnd.ms-excel': ['.xls'],
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
-      'application/pdf': ['.pdf'] }
+      'application/pdf':     ['.pdf'],
+    },
   })
 
   const handleImport = () => {
@@ -46,20 +61,23 @@ export default function Bank() {
     setLoading(true)
     setTimeout(() => {
       setTransactions(prev =>
-        prev.map(t => t.status === 'unmatched' && t.confidence > 0.85
-          ? { ...t, status: 'matched' } : t)
+        prev.map(t =>
+          t.status === 'unmatched' && t.confidence > 0.85
+            ? { ...t, status: 'matched' }
+            : t
+        )
       )
       setLoading(false)
-      toast.success('Auto-reconciliation complete · 5 matched')
+      toast.success('Auto-reconciliation complete · 5 transactions matched')
     }, 2000)
   }
 
-  const acceptMatch = (id) => {
+  const acceptMatch = id => {
     setTransactions(prev => prev.map(t => t.id === id ? { ...t, status: 'matched' } : t))
-    toast.success('Transaction matched')
+    toast.success('Transaction matched ✓')
   }
 
-  const ignoreTransaction = (id) => {
+  const ignoreTransaction = id => {
     setTransactions(prev => prev.map(t => t.id === id ? { ...t, status: 'ignored' } : t))
   }
 
@@ -68,187 +86,265 @@ export default function Bank() {
   )
 
   const counts = {
-    all: transactions.length,
+    all:       transactions.length,
     unmatched: transactions.filter(t => t.status === 'unmatched').length,
-    matched: transactions.filter(t => t.status === 'matched' || t.status === 'manually_matched').length,
+    matched:   transactions.filter(t => t.status === 'matched' || t.status === 'manually_matched').length,
+    ignored:   transactions.filter(t => t.status === 'ignored').length,
   }
+
+  const matchedPct = Math.round((counts.matched / counts.all) * 100)
 
   return (
     <div className="page-enter">
+      {/* Header */}
       <div className="page-header">
-        <div className="page-header-left">
-          <h1>Bank & Reconciliation</h1>
-          <p>Import bank statements · AI auto-matches · Manual review</p>
+        <div>
+          <h1 className="page-title">Bank & Reconciliation</h1>
+          <p className="page-subtitle">Import statements · AI auto-matches · Manual review</p>
         </div>
-        <button className="btn btn-accent" onClick={handleAutoReconcile} disabled={loading}>
-          {loading ? <span className="spinner" style={{ width: 14, height: 14 }} /> : <Zap size={14} />}
-          Auto-Reconcile AI
-        </button>
+        <div className="page-actions">
+          <button className="btn btn-secondary">
+            <FileText size={15} /> Statement History
+          </button>
+          <button className="btn btn-primary" onClick={handleAutoReconcile} disabled={loading}>
+            {loading
+              ? <><span style={{ width: 14, height: 14, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: 'white', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} /> Processing...</>
+              : <><Zap size={15} /> AI Auto-Reconcile</>
+            }
+          </button>
+        </div>
       </div>
 
-      <div className="page-body">
-        {/* Stats row */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+      {/* Stats */}
+      <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)', marginBottom: 24 }}>
+        {[
+          { label: 'Total Imported', value: counts.all, color: 'blue', sub: 'transactions' },
+          { label: 'Matched',        value: counts.matched, color: 'green', sub: 'auto + manual' },
+          { label: 'Pending Review', value: counts.unmatched, color: 'red', sub: 'needs attention' },
+          { label: 'AI Accuracy',    value: '96.4%', color: 'purple', sub: 'this month' },
+        ].map(s => (
+          <div key={s.label} className={`kpi-card ${s.color}`} style={{ padding: '16px 18px' }}>
+            <div className="kpi-label">{s.label}</div>
+            <div className="kpi-value" style={{ fontSize: '1.5rem', marginBottom: 4 }}>{s.value}</div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-3)' }}>{s.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Reconciliation progress bar */}
+      <div className="card" style={{ padding: '16px 20px', marginBottom: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text)' }}>
+            Reconciliation Progress
+          </span>
+          <span style={{ fontSize: '0.85rem', fontWeight: 700, color: matchedPct >= 70 ? 'var(--success)' : 'var(--warning)' }}>
+            {matchedPct}% complete
+          </span>
+        </div>
+        <div className="progress-wrap" style={{ height: 10, borderRadius: 99 }}>
+          <div className="progress-fill" style={{
+            width: `${matchedPct}%`,
+            background: matchedPct >= 70 ? 'var(--success)' : 'var(--warning)',
+            borderRadius: 99,
+          }} />
+        </div>
+        <div style={{ display: 'flex', gap: 20, marginTop: 10 }}>
           {[
-            { label: 'Total Imported', value: transactions.length, color: '#1a1a1a' },
-            { label: 'Matched', value: counts.matched, color: '#16a34a' },
-            { label: 'Pending Review', value: counts.unmatched, color: '#d97706' },
-            { label: 'AI Accuracy', value: '96.4%', color: '#2563eb' },
-          ].map(s => (
-            <div key={s.label} className="card" style={{ padding: '16px 20px' }}>
-              <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9b9590', marginBottom: 6 }}>{s.label}</div>
-              <div style={{ fontFamily: 'DM Serif Display, serif', fontSize: '1.6rem', color: s.color }}>{s.value}</div>
+            { dot: 'var(--success)', label: `${counts.matched} Matched` },
+            { dot: 'var(--warning)', label: `${counts.unmatched} Pending` },
+            { dot: 'var(--text-3)',  label: `${counts.ignored} Ignored` },
+          ].map(item => (
+            <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', color: 'var(--text-2)' }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: item.dot }} />
+              {item.label}
             </div>
           ))}
         </div>
+      </div>
 
-        <div className="grid-2" style={{ gap: 20 }}>
-          {/* Upload panel */}
-          <div>
-            <div className="card mb-3">
-              <div className="card-header"><h3>Import Bank Statement</h3></div>
-              <div className="card-body">
-                <div {...getRootProps()} className={`dropzone${isDragActive ? ' active' : ''}`}>
-                  <input {...getInputProps()} />
-                  <Upload size={28} color="#9b9590" style={{ margin: '0 auto 10px' }} />
-                  {uploadedFile ? (
-                    <>
-                      <p style={{ fontWeight: 500, color: '#16a34a' }}>{uploadedFile.name}</p>
-                      <p className="text-sm text-muted" style={{ marginTop: 4 }}>
-                        {(uploadedFile.size / 1024).toFixed(0)} KB · Ready to import
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      <p style={{ fontWeight: 500, marginBottom: 4 }}>
-                        {isDragActive ? 'Drop it here' : 'Drag & drop or click to upload'}
-                      </p>
-                      <p className="text-sm text-muted">CSV, Excel (.xlsx), or PDF bank statement</p>
-                    </>
-                  )}
-                </div>
-
-                <div style={{ marginTop: 16, padding: '12px', background: '#f7f5f0', borderRadius: 8, fontSize: '0.8rem', color: '#5a5750' }}>
-                  <strong style={{ display: 'block', marginBottom: 4 }}>Supported banks</strong>
-                  HDFC, SBI, ICICI, Axis, Kotak, Yes Bank, IDFC First
-                </div>
-
-                <button className="btn btn-primary w-full" style={{ marginTop: 12 }}
-                  onClick={handleImport} disabled={!uploadedFile || loading}>
-                  {loading ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Processing...</>
-                    : 'Import & Classify'}
-                </button>
-              </div>
+      <div className="grid-2" style={{ gap: 20 }}>
+        {/* Upload Panel */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div className="card">
+            <div className="card-header">
+              <span className="card-title">Import Bank Statement</span>
             </div>
-
-            {/* AI Legend */}
-            <div className="card">
-              <div className="card-header"><h3>AI Classification</h3></div>
-              <div className="card-body">
-                <p className="text-sm text-muted mb-2">
-                  The AI reads each bank narration and maps it to the correct ledger account.
-                  Transactions above 85% confidence are auto-posted.
-                </p>
-                {[
-                  { label: 'Auto-posted (>85%)', pct: 71, color: '#16a34a' },
-                  { label: 'Needs review (60–85%)', pct: 18, color: '#d97706' },
-                  { label: 'Manual required (<60%)', pct: 11, color: '#dc2626' },
-                ].map(item => (
-                  <div key={item.label} style={{ marginBottom: 10 }}>
-                    <div className="flex justify-between" style={{ marginBottom: 4 }}>
-                      <span style={{ fontSize: '0.8rem' }}>{item.label}</span>
-                      <span style={{ fontSize: '0.8rem', fontWeight: 500, color: item.color }}>{item.pct}%</span>
-                    </div>
-                    <div style={{ height: 5, background: '#f0ede6', borderRadius: 3, overflow: 'hidden' }}>
-                      <div style={{ width: `${item.pct}%`, height: '100%', background: item.color, borderRadius: 3 }} />
-                    </div>
-                  </div>
-                ))}
+            <div className="card-body">
+              <div {...getRootProps()} className={`dropzone${isDragActive ? ' active' : ''}`}>
+                <input {...getInputProps()} />
+                <Upload size={28} color="var(--text-3)" style={{ margin: '0 auto 12px' }} />
+                {uploadedFile ? (
+                  <>
+                    <p style={{ fontWeight: 600, color: 'var(--success)', marginBottom: 4 }}>{uploadedFile.name}</p>
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-3)' }}>
+                      {(uploadedFile.size / 1024).toFixed(0)} KB · Ready to import
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p style={{ fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                      {isDragActive ? 'Drop it here ✓' : 'Drag & drop or click to browse'}
+                    </p>
+                    <p style={{ fontSize: '0.78rem', color: 'var(--text-3)' }}>CSV, Excel (.xlsx), or PDF</p>
+                  </>
+                )}
               </div>
+
+              <div style={{ marginTop: 14, padding: '12px 14px', background: 'var(--surface-2)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+                <p style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Supported Banks</p>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-3)', lineHeight: 1.6 }}>
+                  HDFC · SBI · ICICI · Axis · Kotak · Yes Bank · IDFC First
+                </p>
+              </div>
+
+              <button
+                className="btn btn-primary"
+                style={{ width: '100%', marginTop: 12, justifyContent: 'center' }}
+                onClick={handleImport}
+                disabled={!uploadedFile || loading}
+              >
+                {loading
+                  ? 'Processing...'
+                  : <><Upload size={15} /> Import & Classify</>
+                }
+              </button>
             </div>
           </div>
 
-          {/* Transactions panel */}
-          <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+          {/* AI classification breakdown */}
+          <div className="card">
             <div className="card-header">
-              <h3>Bank Transactions</h3>
-              <div className="flex gap-1">
-                {(['all','unmatched','matched']).map(f => (
-                  <button key={f} className={`btn btn-sm ${filter === f ? 'btn-primary' : 'btn-ghost'}`}
-                    onClick={() => setFilter(f)} style={{ textTransform: 'capitalize' }}>
-                    {f} {counts[f] !== undefined && <span style={{ marginLeft: 3, opacity: 0.7 }}>({counts[f]})</span>}
-                  </button>
-                ))}
-              </div>
+              <span className="card-title">AI Classification</span>
+              <span className="badge badge-blue">
+                <Zap size={10} /> Active
+              </span>
             </div>
-            <div style={{ flex: 1, overflowY: 'auto', maxHeight: 520 }}>
-              {filtered.map(txn => (
-                <div key={txn.id} style={{
-                  padding: '14px 20px',
-                  borderBottom: '1px solid #f7f5f0',
-                  background: txn.status === 'unmatched' ? '#fffbf5' : '#fff',
-                }}>
-                  <div className="flex justify-between items-center" style={{ marginBottom: 6 }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 500, fontSize: '0.875rem', marginBottom: 2 }}>{txn.narration}</div>
-                      <div style={{ fontSize: '0.75rem', color: '#9b9590' }}>
-                        {txn.txn_date} · <span style={{ color: txn.txn_type === 'credit' ? '#16a34a' : '#dc2626', fontWeight: 500 }}>
-                          {txn.txn_type === 'credit' ? 'CR' : 'DR'}
-                        </span>
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: 600, fontSize: '0.9rem',
-                        color: txn.txn_type === 'credit' ? '#16a34a' : '#dc2626' }}>
-                        {txn.txn_type === 'credit' ? '+' : '−'}₹{fmt(txn.amount)}
-                      </div>
-                      <span className={`badge ${statusColor[txn.status]}`} style={{ marginTop: 3 }}>
-                        {txn.status}
-                      </span>
-                    </div>
+            <div className="card-body">
+              {[
+                { label: 'Auto-posted (>85%)',       pct: 71, color: 'var(--success)' },
+                { label: 'Needs review (60–85%)',    pct: 18, color: 'var(--warning)' },
+                { label: 'Manual required (<60%)',   pct: 11, color: 'var(--danger)' },
+              ].map(item => (
+                <div key={item.label} style={{ marginBottom: 14 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-2)' }}>{item.label}</span>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 700, color: item.color }}>{item.pct}%</span>
                   </div>
-
-                  {txn.status === 'unmatched' && txn.ai_suggested_account && (
-                    <div style={{
-                      background: '#f0f7ff', border: '1px solid #bfdbfe',
-                      borderRadius: 6, padding: '8px 12px',
-                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    }}>
-                      <div>
-                        <span style={{ fontSize: '0.75rem', color: '#1e40af', fontWeight: 500 }}>AI suggests: </span>
-                        <span style={{ fontSize: '0.8rem', color: '#1a1a1a' }}>{txn.ai_suggested_account}</span>
-                        <div className="conf-bar" style={{ marginTop: 4 }}>
-                          <div className="conf-bar-fill" style={{
-                            width: `${txn.confidence * 100}%`,
-                            background: txn.confidence > 0.85 ? '#16a34a' : '#d97706'
-                          }} />
-                        </div>
-                        <span style={{ fontSize: '0.7rem', color: '#9b9590', marginLeft: 6 }}>
-                          {(txn.confidence * 100).toFixed(0)}%
-                        </span>
-                      </div>
-                      <div className="flex gap-1">
-                        <button className="btn btn-sm btn-accent" onClick={() => acceptMatch(txn.id)}>
-                          <CheckCircle size={12} /> Accept
-                        </button>
-                        <button className="btn btn-sm btn-ghost" onClick={() => ignoreTransaction(txn.id)}>
-                          <X size={12} />
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {txn.status === 'matched' && txn.matched_voucher && (
-                    <div style={{ fontSize: '0.75rem', color: '#16a34a', display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <CheckCircle size={11} /> Matched to {txn.matched_voucher}
-                    </div>
-                  )}
+                  <div className="progress-wrap">
+                    <div className="progress-fill" style={{ width: `${item.pct}%`, background: item.color }} />
+                  </div>
                 </div>
               ))}
             </div>
           </div>
         </div>
+
+        {/* Transactions Panel */}
+        <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+          <div className="card-header" style={{ paddingBottom: 14 }}>
+            <span className="card-title">Bank Transactions</span>
+            <div style={{ display: 'flex', gap: 4, background: 'var(--bg)', borderRadius: 'var(--radius)', padding: 3 }}>
+              {['all', 'unmatched', 'matched'].map(f => (
+                <button
+                  key={f}
+                  className={filter === f ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm'}
+                  style={{ textTransform: 'capitalize' }}
+                  onClick={() => setFilter(f)}
+                >
+                  {f}
+                  <span style={{ marginLeft: 4, opacity: 0.7, fontSize: '0.7rem' }}>({counts[f]})</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ flex: 1, overflowY: 'auto', borderTop: '1px solid var(--border)', maxHeight: 580 }}>
+            {filtered.map(txn => (
+              <div
+                key={txn.id}
+                style={{
+                  padding: '14px 20px',
+                  borderBottom: '1px solid var(--border)',
+                  background: txn.status === 'unmatched' ? '#FFFBEB' : 'var(--surface)',
+                  transition: 'background var(--dur)',
+                }}
+              >
+                {/* Row top */}
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: '0.875rem', marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {txn.narration}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-3)', display: 'flex', gap: 8 }}>
+                      <span>{fmtDate(txn.txn_date)}</span>
+                      <span style={{ color: txn.txn_type === 'credit' ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }}>
+                        {txn.txn_type.toUpperCase()}
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right', marginLeft: 12 }}>
+                    <div style={{
+                      fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.9rem',
+                      color: txn.txn_type === 'credit' ? 'var(--success)' : 'var(--danger)'
+                    }}>
+                      {txn.txn_type === 'credit' ? '+' : '−'}₹{fmt(txn.amount)}
+                    </div>
+                    <span className={`badge ${statusBadge[txn.status]}`} style={{ marginTop: 4 }}>
+                      {txn.status.replace('_', ' ')}
+                    </span>
+                  </div>
+                </div>
+
+                {/* AI suggestion row */}
+                {txn.status === 'unmatched' && txn.ai_suggested_account && (
+                  <div style={{
+                    background: 'var(--primary-light)',
+                    border: '1px solid #C7D2FE',
+                    borderRadius: 'var(--radius)',
+                    padding: '9px 12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
+                        <Zap size={11} color="var(--primary)" />
+                        <span style={{ fontSize: '0.72rem', color: 'var(--primary)', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase' }}>AI Suggests</span>
+                      </div>
+                      <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text)' }}>
+                        {txn.ai_suggested_account}
+                      </span>
+                      <ConfBar
+                        value={txn.confidence}
+                        color={txn.confidence > 0.85 ? 'var(--success)' : 'var(--warning)'}
+                      />
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn btn-sm" style={{ background: 'var(--success)', color: 'white' }} onClick={() => acceptMatch(txn.id)}>
+                        <CheckCircle size={12} /> Accept
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => ignoreTransaction(txn.id)}>
+                        <X size={12} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Matched badge */}
+                {(txn.status === 'matched' || txn.status === 'manually_matched') && txn.matched_voucher && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', color: 'var(--success)', marginTop: 4 }}>
+                    <CheckCircle size={12} />
+                    <span>Matched to <strong>{txn.matched_voucher}</strong></span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )
 }
