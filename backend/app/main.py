@@ -31,6 +31,8 @@ log = structlog.get_logger()
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 class Settings(BaseSettings):
+    # Render injects DATABASE_URL automatically when you attach a PostgreSQL service.
+    # The field alias ensures both DATABASE_URL and database_url are accepted.
     database_url:      str = "postgresql://accounting:password@localhost/accounting"
     secret_key:        str = "change-me-in-production"
     razorpay_key:      str = ""
@@ -46,6 +48,14 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        # Allow Render's DATABASE_URL (uppercase) to populate database_url
+        env_prefix = ""
+        extra = "ignore"
+
+    @property
+    def resolved_db_url(self) -> str:
+        """Return a clean asyncpg DSN, stripping any SQLAlchemy driver prefix."""
+        return self.database_url.replace("+asyncpg", "").replace("postgres://", "postgresql://")
 
 settings = Settings()
 
@@ -57,13 +67,42 @@ pool: asyncpg.Pool | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator:
     global pool
-    pool = await asyncpg.create_pool(
-        dsn=settings.database_url.replace("+asyncpg", ""),
-        min_size=5,
-        max_size=20,
-        command_timeout=60
-    )
-    log.info("Database pool created")
+
+    # ── RENDER FREE TIER: DB CONNECT WITH RETRY ───────────────────────────────
+    # Render's free PostgreSQL can take a few seconds to accept connections
+    # after a cold start. We retry up to 5 times before giving up.
+    # Also use min_size=1/max_size=5 — free tier has a 25-connection limit.
+    import asyncio
+    dsn = settings.resolved_db_url
+    last_error: Exception | None = None
+    for attempt in range(1, 6):
+        try:
+            pool = await asyncpg.create_pool(
+                dsn=dsn,
+                min_size=1,
+                max_size=5,
+                command_timeout=60,
+            )
+            log.info("Database pool created", attempt=attempt)
+            last_error = None
+            break
+        except Exception as exc:
+            last_error = exc
+            log.warning(
+                "DB connection attempt failed, retrying…",
+                attempt=attempt,
+                error=str(exc),
+            )
+            await asyncio.sleep(attempt * 2)   # 2 s, 4 s, 6 s, 8 s back-off
+
+    if last_error is not None:
+        # Surface a clear message instead of a raw traceback.
+        raise RuntimeError(
+            f"Could not connect to the database after 5 attempts. "
+            f"Check that DATABASE_URL is set correctly in your Render "
+            f"environment variables. Last error: {last_error}"
+        ) from last_error
+    # ─────────────────────────────────────────────────────────────────────────
 
     # ── RENDER FREE TIER GUARD ────────────────────────────────────────────────
     # TransactionClassifier tries to load sentence-transformers which is NOT
