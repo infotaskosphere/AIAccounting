@@ -146,9 +146,11 @@ export default function Companies() {
                 <div className="field-group">
                   <label className="field-label">Financial Year</label>
                   <select className="input select" value={form.fy} onChange={e => setForm(f => ({ ...f, fy: e.target.value }))}>
-                    <option>2024-25</option>
-                    <option>2023-24</option>
-                    <option>2022-23</option>
+                    {Array.from({ length: 50 }, (_, i) => {
+                      const start = 2030 - i
+                      const end = (start + 1).toString().slice(-2)
+                      return <option key={start}>{`${start}-${end}`}</option>
+                    })}
                   </select>
                 </div>
               </div>
