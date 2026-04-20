@@ -9,7 +9,7 @@ import {
   Wallet, BarChart2, AlertTriangle, Info, CheckCircle,
   ArrowRight, X, Plus, Zap, Activity
 } from 'lucide-react'
-import { mockDashboard } from '../api/mockData'
+import { getCompanyData } from '../api/mockData'
 import { fmt, fmtCr, fmtDate } from '../utils/format'
 import { useAuth } from '../context/AuthContext'
 
@@ -36,8 +36,10 @@ const TT = ({ active, payload, label }) => {
 
 export default function Dashboard() {
   const { activeCompany } = useAuth()
-  const [data]   = useState(mockDashboard)
-  const [alerts, setAlerts] = useState(data.alerts)
+  const data   = getCompanyData(activeCompany?.id).dashboard
+  const [dismissed, setDismissed] = useState([])
+  const alerts = data.alerts.filter((_,i) => !dismissed.includes(`${activeCompany?.id}-${i}`))
+  const dismissAlert = (i) => setDismissed(d => [...d, `${activeCompany?.id}-${i}`])
   const [modal,  setModal]  = useState(false)
   const bs = data.balanceSheet
 
@@ -65,7 +67,7 @@ export default function Dashboard() {
               {al.type === 'success' && <CheckCircle size={14} />}
               <span className="al-msg">{al.message}</span>
               {al.action && <button className="al-act">{al.action} →</button>}
-              <button className="al-x" onClick={() => setAlerts(a => a.filter((_,j) => j!==i))}>
+              <button className="al-x" onClick={() => dismissAlert(i)}>
                 <X size={13} />
               </button>
             </div>
