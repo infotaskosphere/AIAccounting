@@ -1,159 +1,248 @@
-// src/components/Topbar.jsx  (v2 — UPGRADED)
-// Added: Mode toggle, Upload nav, Reconcile nav, AI badge
-import { useState, useRef, useEffect } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+// src/components/Topbar.jsx  (v2 — original design RESTORED, new items injected)
+import { useState, useEffect, useRef } from 'react'
+import { useNavigate, useLocation } from 'react-router-dom'
+import finixLogo from '../assets/logo.png'
 import {
-  LayoutDashboard, BookOpen, Users, BarChart2, CreditCard,
-  FileText, Briefcase, BarChart, Building2, LogOut,
-  ChevronDown, Menu, X, Upload, GitMerge, Zap
+  LayoutDashboard, BookOpen, ArrowLeftRight, FileText,
+  Users, Building2, Settings, Bell, ChevronDown,
+  LogOut, UserCircle, Plus, Check, BarChart2, HelpCircle,
+  RefreshCw, FileSpreadsheet, CreditCard, Briefcase,
+  PieChart, TrendingUp, Receipt, List,
+  Upload, GitMerge
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { ModeToggle } from './LaymanModeToggle'
 
-const NAV_ACCOUNTANT = [
-  { to:'/',            icon: LayoutDashboard, label:'Dashboard' },
-  { to:'/upload',      icon: Upload,          label:'Upload',    badge:'AI', isNew: true },
-  { to:'/reconcile',   icon: GitMerge,        label:'Reconcile', badge:'AI', isNew: true },
-  { to:'/journal',     icon: BookOpen,        label:'Journal' },
-  { to:'/accounts',    icon: Users,           label:'Accounts' },
-  { to:'/bank',        icon: CreditCard,      label:'Bank' },
-  { to:'/trial-balance', icon: BarChart2,     label:'Trial Balance' },
-  { to:'/reports',     icon: BarChart,        label:'Reports' },
-  { to:'/gst',         icon: FileText,        label:'GST' },
-  { to:'/payroll',     icon: Briefcase,       label:'Payroll' },
-  { to:'/companies',   icon: Building2,       label:'Companies' },
+const NAV = [
+  { key:'dashboard', label:'Dashboard', icon:LayoutDashboard, to:'/', exact:true },
+  {
+    key:'accounting', label:'Accounting', icon:BookOpen,
+    children:[
+      { label:'Journal & Ledger',  icon:List,            to:'/journal',       desc:'All vouchers and entries' },
+      { label:'Chart of Accounts', icon:FileSpreadsheet, to:'/accounts',      desc:'Account master list' },
+      { label:'Trial Balance',     icon:BarChart2,       to:'/trial-balance', desc:'Dr/Cr summary' },
+    ]
+  },
+  {
+    key:'banking', label:'Banking', icon:CreditCard,
+    children:[
+      { label:'Bank Accounts',      icon:Briefcase,      to:'/bank?tab=accounts',  desc:'Manage bank accounts' },
+      { label:'Reconciliation',     icon:RefreshCw,      to:'/bank?tab=reconcile', desc:'Match transactions' },
+      { label:'Import Statement',   icon:ArrowLeftRight, to:'/bank?tab=import',    desc:'Upload CSV/Excel/PDF' },
+      { label:'Smart Reconcile',    icon:GitMerge,       to:'/reconcile',          desc:'AI-powered bank matching', badge:'AI' },
+      { label:'Upload & Auto-Post', icon:Upload,         to:'/upload',             desc:'Zero manual entry pipeline', badge:'AI' },
+    ]
+  },
+  {
+    key:'compliance', label:'GST & Tax', icon:Receipt,
+    children:[
+      { label:'GST Reports',   icon:FileText, to:'/gst', desc:'GSTR-1, GSTR-3B' },
+      { label:'GSTR-1 Filing', icon:FileText, to:'/gst', desc:'Outward supplies' },
+      { label:'TDS / TCS',     icon:Receipt,  to:'/gst', desc:'Tax deducted at source' },
+    ]
+  },
+  {
+    key:'payroll', label:'Payroll', icon:Users,
+    children:[
+      { label:'Salary Processing', icon:Users,      to:'/payroll?tab=salary',    desc:'Run monthly payroll' },
+      { label:'Employee Master',   icon:UserCircle, to:'/payroll?tab=employees', desc:'Manage employees' },
+      { label:'PF / ESIC / TDS',   icon:FileText,   to:'/payroll?tab=statutory', desc:'Statutory compliance' },
+    ]
+  },
+  {
+    key:'reports', label:'Reports', icon:PieChart,
+    children:[
+      { label:'P&L Statement', icon:TrendingUp,     to:'/reports?tab=pl',            desc:'Profit & loss' },
+      { label:'Balance Sheet', icon:BarChart2,      to:'/reports?tab=balance-sheet', desc:'Assets & liabilities' },
+      { label:'Cash Flow',     icon:ArrowLeftRight, to:'/reports?tab=cashflow',       desc:'Inflow / outflow' },
+    ]
+  },
 ]
 
-const NAV_SIMPLE = [
-  { to:'/',         icon: LayoutDashboard, label:'Home' },
-  { to:'/upload',   icon: Upload,          label:'Upload File', badge:'AI' },
-  { to:'/reports',  icon: BarChart,        label:'Reports' },
-]
+function useOutsideClick(ref, cb) {
+  useEffect(() => {
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) cb() }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [ref, cb])
+}
 
 export default function Topbar() {
-  const { user, activeCompany, companies, switchCompany, logout } = useAuth()
-  const location = useLocation()
-  const navigate = useNavigate()
-  const [coMenu, setCoMenu] = useState(false)
-  const [mobileOpen, setMobileOpen] = useState(false)
-  const coRef = useRef(null)
+  const { user, companies, activeCompany, switchCompany, logout } = useAuth()
+  const navigate  = useNavigate()
+  const location  = useLocation()
+  const [open,     setOpen]     = useState(null)
+  const [coDrop,   setCoDrop]   = useState(false)
+  const [userDrop, setUserDrop] = useState(false)
+  const navRef  = useRef(null)
+  const coRef   = useRef(null)
+  const userRef = useRef(null)
 
-  // Close menus on outside click
-  useEffect(() => {
-    const fn = (e) => { if (coRef.current && !coRef.current.contains(e.target)) setCoMenu(false) }
-    document.addEventListener('mousedown', fn)
-    return () => document.removeEventListener('mousedown', fn)
-  }, [])
+  useOutsideClick(navRef,  () => setOpen(null))
+  useOutsideClick(coRef,   () => setCoDrop(false))
+  useOutsideClick(userRef, () => setUserDrop(false))
 
-  const handleLogout = () => { logout(); navigate('/login') }
-  const path = location.pathname
+  const isActive = (item) => {
+    if (item.to) {
+      const path = item.to.split('?')[0]
+      return item.exact ? location.pathname === path : location.pathname.startsWith(path)
+    }
+    if (item.children) return item.children.some(c => location.pathname === c.to.split('?')[0])
+    return false
+  }
+
+  const goTo = (to) => {
+    const [path, query] = to.split('?')
+    navigate(query ? `${path}?${query}` : path)
+    setOpen(null)
+    setCoDrop(false)
+  }
 
   return (
-    <>
-      <header style={{
-        height: 'var(--topbar-h)', background:'var(--surface)',
-        borderBottom:'1px solid var(--border)',
-        display:'flex', alignItems:'center', padding:'0 16px',
-        position:'sticky', top:0, zIndex:200,
-        boxShadow:'var(--shadow-xs)',
-      }}>
+    <header className="topbar">
 
-        {/* Logo */}
-        <Link to="/" style={{ display:'flex', alignItems:'center', gap:8, textDecoration:'none', marginRight:20, flexShrink:0 }}>
-          <div style={{
-            width:26, height:26, borderRadius:6,
-            background:'linear-gradient(135deg,#2563EB,#7C3AED)',
-            display:'flex', alignItems:'center', justifyContent:'center',
-          }}>
-            <Zap size={14} color="#fff" />
+      {/* Logo — original image restored */}
+      <div className="tb-logo" onClick={() => goTo('/')} style={{ cursor:'pointer' }}>
+        <img src={finixLogo} alt="Finix" style={{ height:32, width:'auto', display:'block' }} />
+      </div>
+
+      {/* Nav — original grouped dropdown structure, tabs never cut off */}
+      <nav className="tb-nav" ref={navRef}>
+        {NAV.map(item => (
+          <div key={item.key} className={`tb-item${open === item.key ? ' open' : ''}`}>
+            <div
+              className={`tb-link${isActive(item) ? ' active' : ''}`}
+              onClick={() => {
+                if (item.to) { goTo(item.to); setOpen(null) }
+                else setOpen(open === item.key ? null : item.key)
+              }}
+            >
+              <item.icon size={14} />
+              {item.label}
+              {item.children && <ChevronDown size={12} className="caret" />}
+            </div>
+
+            {item.children && open === item.key && (
+              <div className="tb-dropdown">
+                <div className="dd-header">{item.label}</div>
+                {item.children.map(child => (
+                  <button
+                    key={child.to + child.label}
+                    className={`dd-item${location.pathname === child.to.split('?')[0] ? ' active' : ''}`}
+                    onClick={() => goTo(child.to)}
+                  >
+                    <child.icon size={14} />
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:6, fontWeight:600, marginBottom:1 }}>
+                        {child.label}
+                        {child.badge && (
+                          <span style={{
+                            fontSize:9, padding:'1px 4px', borderRadius:3, lineHeight:1.4,
+                            background:'linear-gradient(135deg,#2563EB,#7C3AED)',
+                            color:'#fff', fontWeight:700, flexShrink:0,
+                          }}>AI</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize:'var(--fs-xs)', color:'var(--text-4)', fontWeight:400 }}>{child.desc}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          <span style={{ fontSize:15, fontWeight:800, color:'var(--text)', letterSpacing:'-.3px' }}>FINIX</span>
-          <span style={{ fontSize:10, padding:'1px 5px', background:'var(--primary-l)', color:'var(--accent)', borderRadius:4, fontWeight:700 }}>AI</span>
-        </Link>
+        ))}
+      </nav>
 
-        {/* Desktop Nav */}
-        <nav style={{ display:'flex', gap:2, flex:1, overflowX:'auto', scrollbarWidth:'none' }}>
-          {NAV_ACCOUNTANT.map(({ to, icon: Icon, label, badge }) => {
-            const active = to === '/' ? path === '/' : path.startsWith(to)
-            return (
-              <Link key={to} to={to} style={{
-                display:'flex', alignItems:'center', gap:5, padding:'5px 8px',
-                borderRadius:'var(--r-md)', textDecoration:'none', whiteSpace:'nowrap',
-                fontSize:'var(--fs-sm)', fontWeight: active ? 600 : 400,
-                color: active ? 'var(--accent)' : 'var(--text-3)',
-                background: active ? 'var(--primary-l)' : 'transparent',
-                transition:'all var(--dur)',
-                flexShrink:0,
-              }}>
-                <Icon size={13} />
-                {label}
-                {badge && (
-                  <span style={{ fontSize:9, padding:'1px 4px', borderRadius:3, background:'linear-gradient(135deg,#2563EB,#7C3AED)', color:'#fff', fontWeight:700 }}>{badge}</span>
-                )}
-              </Link>
-            )
-          })}
-        </nav>
+      {/* Right — original elements, mode toggle added before company switcher */}
+      <div className="tb-right">
 
-        {/* Right side */}
-        <div style={{ display:'flex', alignItems:'center', gap:10, flexShrink:0, marginLeft:12 }}>
-          {/* Mode Toggle */}
-          <ModeToggle />
+        {/* Mode toggle (new, minimal) */}
+        <ModeToggle />
 
-          {/* Company Switcher */}
-          {companies?.length > 0 && (
-            <div ref={coRef} style={{ position:'relative' }}>
-              <button
-                onClick={() => setCoMenu(v => !v)}
-                style={{
-                  display:'flex', alignItems:'center', gap:6, padding:'5px 10px',
-                  border:'1px solid var(--border)', borderRadius:'var(--r-md)',
-                  background:'var(--surface-2)', cursor:'pointer',
-                  fontSize:'var(--fs-sm)', fontWeight:500, color:'var(--text-2)',
-                  maxWidth:160,
-                }}
-              >
-                <Building2 size={12} />
-                <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1 }}>
-                  {activeCompany?.name || 'Company'}
-                </span>
-                <ChevronDown size={11} />
+        {/* Company switcher — original design */}
+        <div style={{ position:'relative' }} ref={coRef}>
+          <div className="company-switcher" onClick={() => setCoDrop(d => !d)}>
+            <div className="co-dot" style={{ background: activeCompany?.color || 'rgba(255,255,255,.2)' }}>
+              {activeCompany?.initials || '?'}
+            </div>
+            <div style={{ overflow:'hidden' }}>
+              <div className="co-name">{activeCompany?.name || 'Select Company'}</div>
+              <div className="co-fy">{activeCompany?.fy}</div>
+            </div>
+            <ChevronDown size={12} style={{ opacity:.7, flexShrink:0 }} />
+          </div>
+          {coDrop && (
+            <div className="tb-dropdown" style={{ right:0, left:'auto', minWidth:240 }}>
+              <div className="dd-header">Switch Company</div>
+              {companies.map(co => (
+                <button
+                  key={co.id}
+                  className={`dd-item${activeCompany?.id === co.id ? ' active' : ''}`}
+                  onClick={() => { switchCompany(co); setCoDrop(false) }}
+                >
+                  <div style={{ width:20, height:20, borderRadius:4, background:co.color, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:700, color:'white', flexShrink:0 }}>
+                    {co.initials}
+                  </div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontWeight:600, fontSize:'var(--fs-sm)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{co.name}</div>
+                    <div style={{ fontSize:'var(--fs-xs)', color:'var(--text-4)' }}>{co.type}</div>
+                  </div>
+                  {activeCompany?.id === co.id && <Check size={13} />}
+                </button>
+              ))}
+              <div className="dd-sep" />
+              <button className="dd-item" onClick={() => { goTo('/companies'); setCoDrop(false) }}>
+                <Plus size={14} />
+                <div><div style={{ fontWeight:600 }}>Add / Manage Companies</div></div>
               </button>
-              {coMenu && (
-                <div style={{
-                  position:'absolute', top:'calc(100% + 4px)', right:0, minWidth:200,
-                  background:'var(--surface)', border:'1px solid var(--border)',
-                  borderRadius:'var(--r-lg)', boxShadow:'var(--shadow-dropdown)', zIndex:300,
-                  overflow:'hidden',
-                }}>
-                  <div style={{ padding:'6px 12px', fontSize:10, fontWeight:700, color:'var(--text-4)', textTransform:'uppercase', borderBottom:'1px solid var(--border)' }}>Companies</div>
-                  {companies.map(co => (
-                    <button key={co.id} onClick={() => { switchCompany(co); setCoMenu(false) }} style={{
-                      display:'block', width:'100%', textAlign:'left', padding:'8px 14px',
-                      border:'none', background: activeCompany?.id === co.id ? 'var(--primary-l)' : 'transparent',
-                      color: activeCompany?.id === co.id ? 'var(--accent)' : 'var(--text)',
-                      cursor:'pointer', fontSize:'var(--fs-sm)',
-                    }}>
-                      {co.name}
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
           )}
-
-          {/* User / Logout */}
-          <button onClick={handleLogout} title="Logout" style={{
-            display:'flex', alignItems:'center', gap:5, padding:'5px 10px',
-            border:'1px solid var(--border)', borderRadius:'var(--r-md)',
-            background:'transparent', cursor:'pointer',
-            fontSize:'var(--fs-sm)', color:'var(--text-3)',
-          }}>
-            <LogOut size={12} />
-            <span style={{ display:'none', whiteSpace:'nowrap' }}>{user?.email?.split('@')[0]}</span>
-          </button>
         </div>
-      </header>
-    </>
+
+        {/* Notifications — original */}
+        <button className="tb-icon-btn" title="Notifications" style={{ position:'relative' }}>
+          <Bell size={16} />
+          <span className="notif-dot" />
+        </button>
+
+        {/* Help — original */}
+        <button className="tb-icon-btn" title="Help">
+          <HelpCircle size={16} />
+        </button>
+
+        {/* User dropdown — original */}
+        <div style={{ position:'relative' }} ref={userRef}>
+          <button className="user-btn" onClick={() => setUserDrop(d => !d)}>
+            <div className="user-av">{user?.name?.charAt(0) || 'U'}</div>
+            <span style={{ maxWidth:90, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+              {user?.name}
+            </span>
+            <ChevronDown size={12} style={{ opacity:.7, flexShrink:0 }} />
+          </button>
+          {userDrop && (
+            <div className="tb-dropdown" style={{ right:0, left:'auto', minWidth:200 }}>
+              <div style={{ padding:'12px 14px', borderBottom:'1px solid var(--border)' }}>
+                <div style={{ fontWeight:600, fontSize:'var(--fs-sm)' }}>{user?.name}</div>
+                <div style={{ fontSize:'var(--fs-xs)', color:'var(--text-3)', marginTop:2 }}>{user?.email}</div>
+                <span className="badge badge-blue" style={{ marginTop:5 }}>{user?.role}</span>
+              </div>
+              <button className="dd-item" onClick={() => { goTo('/companies'); setUserDrop(false) }}>
+                <Building2 size={14} />
+                <div><div style={{ fontWeight:600 }}>Manage Companies</div></div>
+              </button>
+              <button className="dd-item" onClick={() => { goTo('/settings'); setUserDrop(false) }}>
+                <Settings size={14} />
+                <div><div style={{ fontWeight:600 }}>Settings</div></div>
+              </button>
+              <div className="dd-sep" />
+              <button className="dd-item" style={{ color:'var(--danger)' }} onClick={logout}>
+                <LogOut size={14} />
+                <div><div style={{ fontWeight:600 }}>Sign Out</div></div>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </header>
   )
 }
