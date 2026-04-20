@@ -1,7 +1,9 @@
-// src/pages/TrialBalance.jsx — Trial Balance (Indian Format)
+// src/pages/TrialBalance.jsx — Trial Balance (Indian Format) — real data + sample fallback
 import { useState } from 'react'
-import { Download, Search, AlertCircle, CheckCircle } from 'lucide-react'
+import { Download, Search, AlertCircle, CheckCircle, Info } from 'lucide-react'
 import { fmt } from '../utils/format'
+import { computeFinancials } from '../api/companyStore'
+import { useAuth } from '../context/AuthContext'
 
 const TB_DATA = [
   // Code, Name, Group, Op Dr, Op Cr, Txn Dr, Txn Cr, Cl Dr, Cl Cr
@@ -73,10 +75,16 @@ const Col = ({ children, right, bold, mono, small, color }) => (
 )
 
 export default function TrialBalance() {
+  const { activeCompany } = useAuth()
   const [search, setSearch] = useState('')
   const [period, setPeriod] = useState('FY 2024-25')
 
-  const filtered = TB_DATA.filter(r =>
+  const fin = computeFinancials(activeCompany?.id)
+  // Use real trial balance if there are vouchers, otherwise show sample data with a warning
+  const displayData = fin.hasRealData ? fin.trialBalance : TB_DATA
+  const isSampleData = !fin.hasRealData
+
+  const filtered = displayData.filter(r =>
     !search || r.name.toLowerCase().includes(search.toLowerCase()) || r.code.includes(search)
   )
 
@@ -102,7 +110,12 @@ export default function TrialBalance() {
         </div>
       </div>
 
-      {/* Balanced indicator */}
+      {isSampleData && (
+        <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'#FFF7ED', border:'1px solid #FED7AA', borderRadius:10, marginBottom:16, fontSize:13 }}>
+          <Info size={15} color="#D97706"/>
+          <span style={{ color:'#92400E' }}><strong>Sample Data</strong> — No real vouchers posted yet. Post entries from the Dashboard to see your actual trial balance.</span>
+        </div>
+      )}
       <div className={`alert-banner ${balanced ? 'success' : 'error'}`} style={{ marginBottom:20 }}>
         {balanced ? <CheckCircle size={15}/> : <AlertCircle size={15}/>}
         <span className="alert-msg">
