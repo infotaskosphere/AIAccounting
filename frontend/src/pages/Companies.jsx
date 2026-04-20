@@ -103,7 +103,7 @@ export default function Companies() {
       <div style={{
         marginTop: 24, padding: '14px 16px',
         background: 'var(--info-l)', border: '1px solid var(--info-b)',
-        borderRadius: 'var(--r-lg)', fontSize: 'var(--fs-sm)', color: 'var(--info-l)',
+        borderRadius: 'var(--r-lg)', fontSize: 'var(--fs-sm)',
         display: 'flex', gap: 10, alignItems: 'flex-start',
         color: '#0C4A6E'
       }}>
