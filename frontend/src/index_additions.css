@@ -1,0 +1,64 @@
+
+/* ── Modal aliases (fix: pages used modal-overlay/modal-header/modal-footer) ── */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.45);
+  backdrop-filter: blur(3px);
+  z-index: 600;
+  display: flex; align-items: center; justify-content: center;
+  animation: ovIn .15s var(--ease);
+  padding: 20px;
+}
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.modal-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  display: flex; gap: 8px; justify-content: flex-end;
+  flex-shrink: 0;
+}
+/* ensure modal sits in center not bottom */
+.modal-overlay .modal {
+  position: relative;
+  margin: auto;
+}
+
+/* ── Notification panel ───────────────────────────────────────── */
+.notif-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 320px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-dropdown);
+  z-index: 400;
+  overflow: hidden;
+  animation: mdIn .18s var(--ease);
+}
+.notif-item {
+  display: flex; gap: 10px; padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: background var(--dur);
+  text-align: left; width: 100%; border-left: none; border-right: none; border-top: none;
+  background: transparent;
+  font-family: var(--font);
+}
+.notif-item:hover { background: var(--surface-2); }
+.notif-item.unread { background: var(--primary-l); }
+.notif-item.unread:hover { background: #DBEAFE; }
+
+/* ── Opening balances import ─────────────────────────────────── */
+.ob-table input[type="number"],
+.ob-table input[type="text"] {
+  width: 100%; padding: 5px 8px;
+  border: 1px solid var(--border); border-radius: var(--r);
+  font-size: var(--fs-sm); font-family: var(--font-mono);
+  background: var(--surface); color: var(--text);
+}
+.ob-table input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--primary-m); }
