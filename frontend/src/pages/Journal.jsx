@@ -1,7 +1,8 @@
 // src/pages/Journal.jsx
 import { useState, useMemo } from 'react'
 import { Search, Plus, Filter, Download, RotateCcw, X, ChevronLeft, ChevronRight } from 'lucide-react'
-import { mockVouchers } from '../api/mockData'
+import { getCompanyData } from '../api/mockData'
+import { useAuth } from '../context/AuthContext'
 import { fmt, fmtDate } from '../utils/format'
 
 const TYPES = ['all', 'sales', 'purchase', 'receipt', 'payment', 'journal']
@@ -24,13 +25,15 @@ const sourceBadge = {
 }
 
 export default function Journal() {
+  const { activeCompany } = useAuth()
   const [search, setSearch]       = useState('')
   const [typeFilter, setType]     = useState('all')
   const [page, setPage]           = useState(1)
   const [showModal, setShowModal] = useState(false)
 
+  const vouchers = getCompanyData(activeCompany?.id).vouchers
   const filtered = useMemo(() => {
-    return mockVouchers.filter(v => {
+    return vouchers.filter(v => {
       const matchType   = typeFilter === 'all' || v.voucher_type === typeFilter
       const matchSearch = !search || v.narration.toLowerCase().includes(search.toLowerCase()) ||
                           v.voucher_no.toLowerCase().includes(search.toLowerCase())
