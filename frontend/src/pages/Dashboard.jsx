@@ -1,5 +1,6 @@
-// src/pages/Dashboard.jsx — uses real companyStore (no mock data)
-import { useState } from 'react'
+// src/pages/Dashboard.jsx — real data + full journal entry modal + bulk import
+import { useState, useRef, useCallback } from 'react'
+import { useDropzone } from 'react-dropzone'
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer, Legend
@@ -8,9 +9,10 @@ import {
   TrendingUp, TrendingDown, DollarSign, CreditCard,
   Wallet, BarChart2, AlertTriangle, Info, CheckCircle,
   ArrowRight, X, Plus, Zap, Activity, FileText,
-  IndianRupee, Receipt, Users, RefreshCw
+  IndianRupee, Receipt, Users, RefreshCw, Upload,
+  Brain, Trash2, PlusCircle
 } from 'lucide-react'
-import { loadCompanyData, addVoucher } from '../api/companyStore'
+import { loadCompanyData, addVoucher, addVouchers, computeFinancials } from '../api/companyStore'
 import { fmt, fmtCr, fmtDate } from '../utils/format'
 import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
@@ -37,83 +39,501 @@ const TT = ({ active, payload, label }) => {
 }
 
 const COMPLIANCE_ITEMS = [
-  { date:'7th',  label:'TDS Challan Due',  type:'warning', days:3  },
-  { date:'11th', label:'GSTR-1 Filing',    type:'danger',  days:7  },
-  { date:'20th', label:'GSTR-3B Filing',   type:'warning', days:16 },
-  { date:'15th', label:'PF / ESIC Payment',type:'info',    days:11 },
-  { date:'30th', label:'Advance Tax (Q1)', type:'info',    days:26 },
+  { date:'7th',  label:'TDS Challan Due',   type:'warning', days:3  },
+  { date:'11th', label:'GSTR-1 Filing',     type:'danger',  days:7  },
+  { date:'20th', label:'GSTR-3B Filing',    type:'warning', days:16 },
+  { date:'15th', label:'PF / ESIC Payment', type:'info',    days:11 },
+  { date:'30th', label:'Advance Tax (Q1)',  type:'info',    days:26 },
 ]
 
 const QUICK_ACTIONS = [
-  { icon:FileText,    label:'New Invoice',    color:'#2563EB', bg:'#EFF6FF' },
-  { icon:Receipt,     label:'Record Expense', color:'#D97706', bg:'#FFFBEB' },
-  { icon:IndianRupee, label:'Receive Payment',color:'#15803D', bg:'#F0FDF4' },
-  { icon:Users,       label:'Run Payroll',    color:'#7C3AED', bg:'#F5F3FF' },
-  { icon:BarChart2,   label:'GST Return',     color:'#0369A1', bg:'#F0F9FF' },
-  { icon:RefreshCw,   label:'Reconcile Bank', color:'#BE185D', bg:'#FDF2F8' },
+  { icon:FileText,    label:'New Invoice',    color:'#2563EB', bg:'#EFF6FF', type:'sales'    },
+  { icon:Receipt,     label:'Record Expense', color:'#D97706', bg:'#FFFBEB', type:'purchase' },
+  { icon:IndianRupee, label:'Receive Payment',color:'#15803D', bg:'#F0FDF4', type:'receipt'  },
+  { icon:Users,       label:'Run Payroll',    color:'#7C3AED', bg:'#F5F3FF', type:'payment'  },
+  { icon:BarChart2,   label:'GST Return',     color:'#0369A1', bg:'#F0F9FF', type:'journal'  },
+  { icon:RefreshCw,   label:'Reconcile Bank', color:'#BE185D', bg:'#FDF2F8', type:'journal'  },
 ]
 
-export default function Dashboard() {
-  const { activeCompany } = useAuth()
-  const [refresh, setRefresh] = useState(0)
-  const companyData = loadCompanyData(activeCompany?.id)
-  const data = companyData.dashboard
-  const bs   = data.balanceSheet
+const EMPTY_ROW = () => ({
+  id: Date.now() + Math.random(),
+  type:'sales', date:new Date().toISOString().slice(0,10),
+  reference:'', party:'', narration:'', amount:'', cgst:'', sgst:'', igst:'',
+})
 
-  const [dismissed, setDismissed] = useState([])
-  const alerts = (data.alerts || []).filter((_,i) => !dismissed.includes(`${activeCompany?.id}-${i}`))
-  const dismissAlert = (i) => setDismissed(d => [...d, `${activeCompany?.id}-${i}`])
+// ── CSV Template download ──────────────────────────────────────────────────
+function downloadCSVTemplate() {
+  const headers = 'type,date,reference,party,narration,amount,cgst,sgst,igst'
+  const sample  = [
+    'sales,2025-04-01,INV-001,ABC Corp,Software services,50000,4500,4500,0',
+    'purchase,2025-04-02,PUR-001,XYZ Suppliers,Office supplies,10000,900,900,0',
+    'receipt,2025-04-03,RCP-001,ABC Corp,Payment received,59000,0,0,0',
+    'payment,2025-04-05,PAY-001,XYZ Suppliers,Payment made,11800,0,0,0',
+  ].join('\n')
+  const blob = new Blob([headers + '\n' + sample], { type:'text/csv' })
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob)
+  a.download = 'voucher_import_template.csv'; a.click()
+  toast.success('Template downloaded')
+}
 
-  const [modal, setModal] = useState(false)
-  const [vForm, setVForm] = useState({
-    type:'sales', date:new Date().toISOString().slice(0,10),
-    reference:'', narration:'', amount:''
+// ── Parse CSV text into voucher rows ──────────────────────────────────────
+function parseCSV(text) {
+  const lines = text.trim().split('\n').filter(Boolean)
+  if (lines.length < 2) throw new Error('CSV must have a header row and at least one data row')
+  const headers = lines[0].split(',').map(h => h.trim().toLowerCase())
+  return lines.slice(1).map((line, i) => {
+    const vals = line.split(',').map(v => v.trim().replace(/^"|"$/g,''))
+    const row = {}
+    headers.forEach((h, idx) => { row[h] = vals[idx] || '' })
+    const amount = parseFloat(row.amount)
+    if (!amount || isNaN(amount)) throw new Error(`Row ${i+2}: invalid amount "${row.amount}"`)
+    const validTypes = ['sales','purchase','receipt','payment','journal','contra']
+    if (row.type && !validTypes.includes(row.type)) throw new Error(`Row ${i+2}: invalid type "${row.type}"`)
+    return {
+      voucher_type: row.type || 'journal',
+      date:         row.date || new Date().toISOString().slice(0,10),
+      reference:    row.reference || '',
+      party:        row.party || '',
+      narration:    row.narration || 'Imported entry',
+      amount:       amount,
+      cgst:         parseFloat(row.cgst) || 0,
+      sgst:         parseFloat(row.sgst) || 0,
+      igst:         parseFloat(row.igst) || 0,
+    }
+  })
+}
+
+// ── Journal Entry Modal ────────────────────────────────────────────────────
+function JournalModal({ onClose, companyId, onPosted, defaultType }) {
+  const [tab, setTab] = useState('single') // single | bulk | ai
+  const [form, setForm] = useState({
+    type: defaultType || 'sales',
+    date: new Date().toISOString().slice(0,10),
+    reference:'', party:'', narration:'', amount:'', cgst:'', sgst:'', igst:'',
+  })
+  const [rows, setRows] = useState([EMPTY_ROW()])
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiFile, setAiFile] = useState(null)
+  const [csvLoading, setCsvLoading] = useState(false)
+  const [csvPreview, setCsvPreview] = useState(null)
+  const [csvError, setCsvError] = useState('')
+  const fileRef = useRef()
+  const set = (k,v) => setForm(f => ({...f,[k]:v}))
+
+  // ── Single post ──────────────────────────────────────────────────────────
+  const handleSingle = () => {
+    if (!form.narration.trim()) return toast.error('Narration is required')
+    const amt = parseFloat(form.amount)
+    if (!amt || amt <= 0) return toast.error('Enter a valid amount')
+    addVoucher(companyId, {
+      voucher_type: form.type,
+      date: form.date,
+      reference: form.reference,
+      party: form.party,
+      narration: form.narration,
+      amount: amt,
+      cgst: parseFloat(form.cgst)||0,
+      sgst: parseFloat(form.sgst)||0,
+      igst: parseFloat(form.igst)||0,
+    })
+    toast.success('Voucher posted ✓')
+    onPosted(); onClose()
+  }
+
+  // ── Bulk rows post ───────────────────────────────────────────────────────
+  const handleBulkPost = () => {
+    const valid = rows.filter(r => r.narration?.trim() && parseFloat(r.amount) > 0)
+    if (!valid.length) return toast.error('Fill at least one complete row')
+    addVouchers(companyId, valid.map(r => ({
+      voucher_type: r.type || 'journal',
+      date: r.date,
+      reference: r.reference,
+      party: r.party,
+      narration: r.narration,
+      amount: parseFloat(r.amount)||0,
+      cgst: parseFloat(r.cgst)||0,
+      sgst: parseFloat(r.sgst)||0,
+      igst: parseFloat(r.igst)||0,
+    })))
+    toast.success(`${valid.length} vouchers posted ✓`)
+    onPosted(); onClose()
+  }
+
+  // ── CSV upload ────────────────────────────────────────────────────────────
+  const handleCSVFile = async (file) => {
+    setCsvError(''); setCsvPreview(null)
+    if (!file) return
+    setCsvLoading(true)
+    try {
+      const text = await file.text()
+      const parsed = parseCSV(text)
+      setCsvPreview(parsed)
+    } catch (e) { setCsvError(e.message) }
+    setCsvLoading(false)
+  }
+
+  const handleCSVImport = () => {
+    if (!csvPreview?.length) return
+    addVouchers(companyId, csvPreview)
+    toast.success(`${csvPreview.length} vouchers imported from CSV ✓`)
+    onPosted(); onClose()
+  }
+
+  // ── AI invoice parse ──────────────────────────────────────────────────────
+  const handleAIFile = async (file) => {
+    if (!file) return
+    setAiFile(file); setAiLoading(true)
+    try {
+      const formData = new FormData(); formData.append('file', file)
+      const token = localStorage.getItem('token')
+      const res = await fetch('/api/v1/invoice/parse', {
+        method:'POST',
+        headers: token ? { Authorization:`Bearer ${token}` } : {},
+        body: formData,
+      })
+      if (!res.ok) {
+        const e = await res.json().catch(()=>({}))
+        throw new Error(e.detail || `Server error ${res.status}`)
+      }
+      const { data } = await res.json()
+      setForm(f => ({
+        ...f,
+        type:      data.type || f.type,
+        date:      data.date || f.date,
+        reference: data.reference || f.reference,
+        party:     data.party || f.party,
+        narration: data.narration || f.narration,
+        amount:    data.amount || f.amount,
+        cgst:      data.cgst || f.cgst,
+        sgst:      data.sgst || f.sgst,
+        igst:      data.igst || f.igst,
+      }))
+      setTab('single')
+      toast.success('Invoice parsed! Review and post.')
+    } catch (e) {
+      toast.error('Parse failed: ' + e.message)
+    }
+    setAiLoading(false)
+  }
+
+  const onDropAI = useCallback(files => { if (files[0]) handleAIFile(files[0]) }, [])
+  const { getRootProps: aiRootProps, getInputProps: aiInputProps, isDragActive: aiDrag } = useDropzone({
+    onDrop: onDropAI, accept: { 'application/pdf':['.pdf'], 'image/*':['.png','.jpg','.jpeg'] }
+  })
+  const onDropCSV = useCallback(files => { if (files[0]) handleCSVFile(files[0]) }, [])
+  const { getRootProps: csvRootProps, getInputProps: csvInputProps, isDragActive: csvDrag } = useDropzone({
+    onDrop: onDropCSV, accept: { 'text/csv':['.csv'], 'text/plain':['.txt'] }
   })
 
-  const isEmpty = !data.recentVouchers?.length && bs.income === 0
-
-  const handlePostVoucher = () => {
-    if (!vForm.narration.trim() || !vForm.amount) { toast.error('Fill all required fields'); return }
-    addVoucher(activeCompany?.id, {
-      voucher_type: vForm.type,
-      date: vForm.date,
-      reference: vForm.reference,
-      narration: vForm.narration,
-      amount: Number(vForm.amount),
-    })
-    toast.success('Voucher posted successfully!')
-    setModal(false)
-    setVForm({ type:'sales', date:new Date().toISOString().slice(0,10), reference:'', narration:'', amount:'' })
-    setRefresh(r => r + 1)
+  const GSTSummary = ({ cgst, sgst, igst, amount }) => {
+    const c=parseFloat(cgst)||0, s=parseFloat(sgst)||0, g=parseFloat(igst)||0, a=parseFloat(amount)||0
+    if (!c && !s && !g) return null
+    return (
+      <div style={{ padding:'8px 12px', background:'var(--surface-2)', borderRadius:8, fontSize:12, color:'var(--text-2)', marginTop:4 }}>
+        Taxable: ₹{fmt(a)} · CGST: ₹{fmt(c)} · SGST: ₹{fmt(s)} · IGST: ₹{fmt(g)} · <strong>Total: ₹{fmt(a+c+s+g)}</strong>
+      </div>
+    )
   }
 
   return (
-    <div className="page-wrap page-enter">
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth:680, width:'95vw' }} onClick={e=>e.stopPropagation()}>
+        <div className="modal-head">
+          <span className="modal-title">New Journal Entry</span>
+          <button className="btn btn-ghost btn-icon" onClick={onClose}><X size={17}/></button>
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display:'flex', gap:2, padding:'10px 20px 0', background:'var(--surface-2)', borderBottom:'1px solid var(--border)' }}>
+          {[
+            { key:'single', label:'✏️ Single Entry' },
+            { key:'bulk',   label:'📋 Bulk Entry' },
+            { key:'csv',    label:'📂 CSV Import' },
+            { key:'ai',     label:'🤖 AI Invoice' },
+          ].map(t => (
+            <button key={t.key}
+              onClick={()=>setTab(t.key)}
+              style={{ padding:'8px 14px', fontSize:'0.82rem', fontWeight:600, border:'none',
+                borderRadius:'6px 6px 0 0', cursor:'pointer', background: tab===t.key?'var(--surface)':'transparent',
+                color: tab===t.key?'var(--primary)':'var(--text-3)',
+                borderBottom: tab===t.key?'2px solid var(--primary)':'2px solid transparent' }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="modal-body" style={{ maxHeight:'60vh', overflowY:'auto' }}>
+
+          {/* ── Single Entry ─────────────────────────────────────────────── */}
+          {tab === 'single' && (
+            <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+              <div className="field-group">
+                <label className="field-label">Voucher Type</label>
+                <select className="input" value={form.type} onChange={e=>set('type',e.target.value)}>
+                  <option value="sales">Sales Invoice</option>
+                  <option value="purchase">Purchase Invoice</option>
+                  <option value="receipt">Receipt Voucher</option>
+                  <option value="payment">Payment Voucher</option>
+                  <option value="journal">Journal Voucher</option>
+                  <option value="contra">Contra</option>
+                </select>
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+                <div className="field-group">
+                  <label className="field-label">Date</label>
+                  <input type="date" className="input" value={form.date} onChange={e=>set('date',e.target.value)}/>
+                </div>
+                <div className="field-group">
+                  <label className="field-label">Reference No.</label>
+                  <input type="text" className="input" placeholder="INV-0001" value={form.reference} onChange={e=>set('reference',e.target.value)}/>
+                </div>
+              </div>
+              <div className="field-group">
+                <label className="field-label">Party / Customer / Supplier</label>
+                <input type="text" className="input" placeholder="Company or person name" value={form.party} onChange={e=>set('party',e.target.value)}/>
+              </div>
+              <div className="field-group">
+                <label className="field-label">Narration *</label>
+                <input type="text" className="input" placeholder="Describe the transaction" value={form.narration} onChange={e=>set('narration',e.target.value)}/>
+              </div>
+              <div className="field-group">
+                <label className="field-label">Taxable Amount (₹) *</label>
+                <input type="number" className="input" placeholder="0.00" value={form.amount} onChange={e=>set('amount',e.target.value)} min="0" step="0.01"/>
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
+                <div className="field-group">
+                  <label className="field-label">CGST (₹)</label>
+                  <input type="number" className="input" placeholder="0.00" value={form.cgst} onChange={e=>set('cgst',e.target.value)} min="0" step="0.01"/>
+                </div>
+                <div className="field-group">
+                  <label className="field-label">SGST (₹)</label>
+                  <input type="number" className="input" placeholder="0.00" value={form.sgst} onChange={e=>set('sgst',e.target.value)} min="0" step="0.01"/>
+                </div>
+                <div className="field-group">
+                  <label className="field-label">IGST (₹)</label>
+                  <input type="number" className="input" placeholder="0.00" value={form.igst} onChange={e=>set('igst',e.target.value)} min="0" step="0.01"/>
+                </div>
+              </div>
+              <GSTSummary {...form}/>
+            </div>
+          )}
+
+          {/* ── Bulk Entry (spreadsheet-style rows) ─────────────────────── */}
+          {tab === 'bulk' && (
+            <div>
+              <p style={{ fontSize:12, color:'var(--text-3)', marginBottom:12 }}>
+                Enter multiple vouchers at once. Rows with no narration/amount are ignored.
+              </p>
+              <div style={{ overflowX:'auto' }}>
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                  <thead>
+                    <tr style={{ background:'var(--surface-2)' }}>
+                      {['Type','Date','Party','Narration','Amount','CGST','SGST',''].map(h => (
+                        <th key={h} style={{ padding:'6px 8px', textAlign:'left', fontSize:11, fontWeight:700, color:'var(--text-3)', borderBottom:'1px solid var(--border)', whiteSpace:'nowrap' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, i) => (
+                      <tr key={row.id} style={{ borderBottom:'1px solid var(--border)' }}>
+                        <td style={{ padding:4 }}>
+                          <select value={row.type} onChange={e=>setRows(rs=>rs.map((r,j)=>j===i?{...r,type:e.target.value}:r))}
+                            style={{ width:90, height:28, border:'1px solid var(--border)', borderRadius:4, fontSize:11, background:'var(--bg)', color:'var(--text)', padding:'0 4px' }}>
+                            <option value="sales">Sales</option><option value="purchase">Purchase</option>
+                            <option value="receipt">Receipt</option><option value="payment">Payment</option>
+                            <option value="journal">Journal</option>
+                          </select>
+                        </td>
+                        <td style={{ padding:4 }}>
+                          <input type="date" value={row.date} onChange={e=>setRows(rs=>rs.map((r,j)=>j===i?{...r,date:e.target.value}:r))}
+                            style={{ width:120, height:28, border:'1px solid var(--border)', borderRadius:4, fontSize:11, background:'var(--bg)', color:'var(--text)', padding:'0 4px' }}/>
+                        </td>
+                        <td style={{ padding:4 }}>
+                          <input placeholder="Party" value={row.party} onChange={e=>setRows(rs=>rs.map((r,j)=>j===i?{...r,party:e.target.value}:r))}
+                            style={{ width:100, height:28, border:'1px solid var(--border)', borderRadius:4, fontSize:11, background:'var(--bg)', color:'var(--text)', padding:'0 4px' }}/>
+                        </td>
+                        <td style={{ padding:4 }}>
+                          <input placeholder="Description" value={row.narration} onChange={e=>setRows(rs=>rs.map((r,j)=>j===i?{...r,narration:e.target.value}:r))}
+                            style={{ width:160, height:28, border:'1px solid var(--border)', borderRadius:4, fontSize:11, background:'var(--bg)', color:'var(--text)', padding:'0 4px' }}/>
+                        </td>
+                        <td style={{ padding:4 }}>
+                          <input type="number" placeholder="0.00" value={row.amount} onChange={e=>setRows(rs=>rs.map((r,j)=>j===i?{...r,amount:e.target.value}:r))}
+                            style={{ width:80, height:28, border:'1px solid var(--border)', borderRadius:4, fontSize:11, background:'var(--bg)', color:'var(--text)', padding:'0 4px' }}/>
+                        </td>
+                        <td style={{ padding:4 }}>
+                          <input type="number" placeholder="0" value={row.cgst} onChange={e=>setRows(rs=>rs.map((r,j)=>j===i?{...r,cgst:e.target.value}:r))}
+                            style={{ width:60, height:28, border:'1px solid var(--border)', borderRadius:4, fontSize:11, background:'var(--bg)', color:'var(--text)', padding:'0 4px' }}/>
+                        </td>
+                        <td style={{ padding:4 }}>
+                          <input type="number" placeholder="0" value={row.sgst} onChange={e=>setRows(rs=>rs.map((r,j)=>j===i?{...r,sgst:e.target.value}:r))}
+                            style={{ width:60, height:28, border:'1px solid var(--border)', borderRadius:4, fontSize:11, background:'var(--bg)', color:'var(--text)', padding:'0 4px' }}/>
+                        </td>
+                        <td style={{ padding:4 }}>
+                          <button onClick={()=>setRows(rs=>rs.filter((_,j)=>j!==i))} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--danger)', padding:4 }}>
+                            <Trash2 size={13}/>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ display:'flex', gap:8, marginTop:10, alignItems:'center' }}>
+                <button className="btn btn-secondary btn-sm" onClick={()=>setRows(rs=>[...rs, EMPTY_ROW()])}>
+                  <PlusCircle size={13}/> Add Row
+                </button>
+                <button className="btn btn-ghost btn-sm" onClick={()=>setRows([EMPTY_ROW()])}>Clear</button>
+                <span style={{ fontSize:11, color:'var(--text-3)', marginLeft:'auto' }}>
+                  {rows.filter(r=>r.narration?.trim()&&parseFloat(r.amount)>0).length} valid rows
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* ── CSV Import ───────────────────────────────────────────────── */}
+          {tab === 'csv' && (
+            <div>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+                <p style={{ fontSize:12, color:'var(--text-3)', margin:0 }}>Upload a CSV file to bulk-import vouchers.</p>
+                <button className="btn btn-ghost btn-sm" onClick={downloadCSVTemplate}>
+                  <FileText size={12}/> Download Template
+                </button>
+              </div>
+
+              <div {...csvRootProps()} style={{ border:`2px dashed ${csvDrag?'var(--primary)':'var(--border)'}`, borderRadius:10, padding:'28px 20px', textAlign:'center', cursor:'pointer', background: csvDrag?'var(--primary-l)':'var(--surface-2)', marginBottom:12 }}>
+                <input {...csvInputProps()}/>
+                <Upload size={24} color="var(--text-3)" style={{ margin:'0 auto 8px' }}/>
+                <p style={{ fontWeight:600, fontSize:13, color:'var(--text)', marginBottom:4 }}>{csvDrag?'Drop CSV here':'Drag & drop CSV or click to browse'}</p>
+                <p style={{ fontSize:11, color:'var(--text-3)' }}>Columns: type, date, reference, party, narration, amount, cgst, sgst, igst</p>
+              </div>
+
+              {csvLoading && <p style={{ fontSize:12, color:'var(--text-3)' }}>Parsing CSV…</p>}
+              {csvError && <div style={{ padding:'10px 12px', background:'#FEF2F2', border:'1px solid #FCA5A5', borderRadius:8, fontSize:12, color:'#B91C1C', marginBottom:8 }}>❌ {csvError}</div>}
+
+              {csvPreview && (
+                <div>
+                  <div style={{ padding:'8px 12px', background:'#F0FDF4', border:'1px solid #86EFAC', borderRadius:8, fontSize:12, color:'#15803D', marginBottom:8 }}>
+                    ✅ {csvPreview.length} rows ready to import
+                  </div>
+                  <div style={{ maxHeight:200, overflowY:'auto', border:'1px solid var(--border)', borderRadius:8 }}>
+                    <table style={{ width:'100%', fontSize:11, borderCollapse:'collapse' }}>
+                      <thead><tr style={{ background:'var(--surface-2)' }}>
+                        {['Type','Date','Party','Narration','Amount','GST'].map(h=>(
+                          <th key={h} style={{ padding:'5px 8px', textAlign:'left', fontWeight:700, color:'var(--text-3)', borderBottom:'1px solid var(--border)' }}>{h}</th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {csvPreview.slice(0,10).map((r,i) => (
+                          <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                            <td style={{ padding:'4px 8px' }}><span className={`badge ${vBadge[r.voucher_type]||'badge-gray'}`}>{r.voucher_type}</span></td>
+                            <td style={{ padding:'4px 8px', color:'var(--text-3)' }}>{r.date}</td>
+                            <td style={{ padding:'4px 8px' }}>{r.party||'—'}</td>
+                            <td style={{ padding:'4px 8px', maxWidth:120, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.narration}</td>
+                            <td style={{ padding:'4px 8px', fontFamily:'var(--font-mono)' }}>₹{fmt(r.amount)}</td>
+                            <td style={{ padding:'4px 8px', color:'var(--text-3)' }}>₹{fmt((r.cgst||0)+(r.sgst||0)+(r.igst||0))}</td>
+                          </tr>
+                        ))}
+                        {csvPreview.length > 10 && <tr><td colSpan={6} style={{ padding:'4px 8px', color:'var(--text-3)', fontSize:11 }}>…and {csvPreview.length-10} more rows</td></tr>}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── AI Invoice Parse ─────────────────────────────────────────── */}
+          {tab === 'ai' && (
+            <div>
+              <p style={{ fontSize:12, color:'var(--text-3)', marginBottom:14 }}>
+                Upload a PDF or image invoice. Claude AI will extract all fields automatically.
+              </p>
+              <div {...aiRootProps()} style={{ border:`2px dashed ${aiDrag?'var(--primary)':'var(--border)'}`, borderRadius:10, padding:'32px 20px', textAlign:'center', cursor:'pointer', background: aiDrag?'var(--primary-l)':'var(--surface-2)', marginBottom:12 }}>
+                <input {...aiInputProps()}/>
+                {aiLoading ? (
+                  <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:10 }}>
+                    <span style={{ width:28, height:28, border:'3px solid #E0E7FF', borderTopColor:'#2563EB', borderRadius:'50%', display:'inline-block', animation:'spin 0.7s linear infinite' }}/>
+                    <p style={{ fontSize:13, color:'var(--text-2)', fontWeight:600 }}>AI is reading the invoice…</p>
+                  </div>
+                ) : aiFile ? (
+                  <>
+                    <Brain size={28} color="#2563EB" style={{ margin:'0 auto 8px' }}/>
+                    <p style={{ fontWeight:600, fontSize:13, color:'var(--success)', marginBottom:4 }}>✅ {aiFile.name} — parsed!</p>
+                    <p style={{ fontSize:11, color:'var(--text-3)' }}>Fields filled in Single Entry tab. Switch there to review and post.</p>
+                  </>
+                ) : (
+                  <>
+                    <Brain size={28} color="#2563EB" style={{ margin:'0 auto 8px' }}/>
+                    <p style={{ fontWeight:600, fontSize:13, color:'var(--text)', marginBottom:4 }}>
+                      {aiDrag ? 'Drop invoice here' : 'Drag & drop PDF/image invoice'}
+                    </p>
+                    <p style={{ fontSize:11, color:'var(--text-3)' }}>Supported: PDF, PNG, JPG · Powered by Claude AI</p>
+                  </>
+                )}
+              </div>
+              <div style={{ padding:'10px 12px', background:'linear-gradient(135deg,#EFF6FF,#F5F3FF)', border:'1px solid #C7D2FE', borderRadius:8, display:'flex', gap:8, alignItems:'center' }}>
+                <Zap size={14} color="#2563EB"/>
+                <span style={{ fontSize:11, color:'#3730A3' }}>Extracts: party name, date, invoice no., taxable amount, CGST, SGST, IGST, total</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="modal-foot">
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          {tab === 'single' && <button className="btn btn-primary" onClick={handleSingle}><Plus size={14}/> Post Voucher</button>}
+          {tab === 'bulk'   && <button className="btn btn-primary" onClick={handleBulkPost}><Plus size={14}/> Post {rows.filter(r=>r.narration?.trim()&&parseFloat(r.amount)>0).length} Vouchers</button>}
+          {tab === 'csv'    && <button className="btn btn-primary" onClick={handleCSVImport} disabled={!csvPreview?.length}><Upload size={14}/> Import {csvPreview?.length||0} Rows</button>}
+          {tab === 'ai'     && <button className="btn btn-primary" onClick={()=>setTab('single')} disabled={!aiFile}>Review in Single Entry →</button>}
+        </div>
+        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      </div>
+    </div>
+  )
+}
+
+// ── Main Dashboard ─────────────────────────────────────────────────────────
+export default function Dashboard() {
+  const { activeCompany } = useAuth()
+  const [refresh, setRefresh] = useState(0)
+  const [modal, setModal] = useState(false)
+  const [defaultType, setDefaultType] = useState('sales')
+  const [dismissed, setDismissed] = useState([])
+
+  const companyData = loadCompanyData(activeCompany?.id)
+  const fin  = computeFinancials(activeCompany?.id)
+  const data = companyData.dashboard
+  const bs   = fin
+
+  const alerts = (data.alerts || []).filter((_,i) => !dismissed.includes(`${activeCompany?.id}-${i}`))
+  const isEmpty = !fin.hasRealData
+
+  const openModal = (type = 'sales') => { setDefaultType(type); setModal(true) }
+  const handlePosted = () => setRefresh(r => r+1)
+
+  return (
+    <div className="page-wrap page-enter" key={refresh}>
       <div className="page-header">
         <div>
           <h1 className="page-title">Dashboard</h1>
           <p className="page-sub">{activeCompany?.name} · {activeCompany?.fy} · Financial Overview</p>
         </div>
         <div className="page-actions">
-          <button className="btn btn-secondary" onClick={() => toast.success('Report exported!')}><Activity size={13}/> Export PDF</button>
-          <button className="btn btn-primary" onClick={() => setModal(true)}><Plus size={13}/> New Entry</button>
+          <button className="btn btn-secondary" onClick={()=>toast.success('Report exported!')}><Activity size={13}/> Export PDF</button>
+          <button className="btn btn-primary" onClick={()=>openModal()}><Plus size={13}/> New Entry</button>
         </div>
       </div>
 
-      {alerts.length > 0 && (
-        <div className="alerts-wrap">
-          {alerts.map((al, i) => (
-            <div key={i} className={`alert-bar ${al.type==='warning'?'warn':al.type==='success'?'succ':'info'}`}>
-              {al.type==='warning'&&<AlertTriangle size={14}/>}
-              {al.type==='info'&&<Info size={14}/>}
-              {al.type==='success'&&<CheckCircle size={14}/>}
-              <span className="al-msg">{al.message}</span>
-              {al.action&&<button className="al-act">{al.action} →</button>}
-              <button className="al-x" onClick={()=>dismissAlert(i)}><X size={13}/></button>
-            </div>
-          ))}
+      {alerts.map((al, i) => (
+        <div key={i} className={`alert-bar ${al.type==='warning'?'warn':al.type==='success'?'succ':'info'}`}>
+          {al.type==='warning'&&<AlertTriangle size={14}/>}
+          {al.type==='info'&&<Info size={14}/>}
+          {al.type==='success'&&<CheckCircle size={14}/>}
+          <span className="al-msg">{al.message}</span>
+          {al.action&&<button className="al-act">{al.action} →</button>}
+          <button className="al-x" onClick={()=>setDismissed(d=>[...d,`${activeCompany?.id}-${i}`])}><X size={13}/></button>
         </div>
-      )}
+      ))}
 
       {isEmpty && (
         <div style={{ padding:'20px 24px', background:'linear-gradient(135deg,#EFF6FF,#F5F3FF)', border:'1px solid #C7D2FE', borderRadius:12, marginBottom:16, display:'flex', alignItems:'center', gap:16 }}>
@@ -122,17 +542,18 @@ export default function Dashboard() {
             <div style={{ fontWeight:700, fontSize:15, marginBottom:4 }}>Welcome to {activeCompany?.name}!</div>
             <div style={{ fontSize:13, color:'var(--text-2)' }}>No data yet. Post a voucher or import a bank statement to get started.</div>
           </div>
-          <button className="btn btn-primary" style={{ marginLeft:'auto', whiteSpace:'nowrap' }} onClick={()=>setModal(true)}>
+          <button className="btn btn-primary" style={{ marginLeft:'auto', whiteSpace:'nowrap' }} onClick={()=>openModal()}>
             <Plus size={13}/> Post First Entry
           </button>
         </div>
       )}
 
+      {/* Quick actions */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:10, marginBottom:16 }}>
         {QUICK_ACTIONS.map(a => (
           <button key={a.label} className="card"
             style={{ padding:'14px 10px', display:'flex', flexDirection:'column', alignItems:'center', gap:8, cursor:'pointer', border:'1px solid var(--border)', background:'var(--surface)', transition:'all .15s' }}
-            onClick={()=>setModal(true)}
+            onClick={()=>openModal(a.type)}
             onMouseEnter={e=>{e.currentTarget.style.borderColor=a.color;e.currentTarget.style.background=a.bg}}
             onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.background='var(--surface)'}}>
             <div style={{ width:36, height:36, borderRadius:10, background:a.bg, display:'flex', alignItems:'center', justifyContent:'center' }}>
@@ -143,10 +564,11 @@ export default function Dashboard() {
         ))}
       </div>
 
+      {/* KPIs — now use real computed financials */}
       <div className="kpi-grid">
         {[
           { label:'Total Revenue',  value:fmtCr(bs.income),      icon:DollarSign, color:'blue',   trend:isEmpty?'No data yet':'+vs expenses', dir:'up' },
-          { label:'Net Profit',     value:fmtCr(bs.net_profit),  icon:TrendingUp, color:'green',  trend:bs.income>0?`Margin ${((bs.net_profit/bs.income)*100).toFixed(1)}%`:'No data yet', dir:bs.net_profit>=0?'up':'down' },
+          { label:'Net Profit',     value:fmtCr(bs.net_profit),  icon:TrendingUp, color:'green',  trend:bs.income>0?`Margin ${((bs.net_profit/Math.max(bs.income,1))*100).toFixed(1)}%`:'No data yet', dir:bs.net_profit>=0?'up':'down' },
           { label:'Total Assets',   value:fmtCr(bs.assets),      icon:Wallet,     color:'purple', trend:'Incl. receivables', dir:'up' },
           { label:'Net Payables',   value:fmtCr(bs.liabilities), icon:CreditCard, color:'red',    trend:'Creditors + tax', dir:'down' },
         ].map(k => (
@@ -164,6 +586,7 @@ export default function Dashboard() {
         ))}
       </div>
 
+      {/* Charts */}
       <div className="grid-2" style={{ marginBottom:16 }}>
         <div className="card">
           <div className="card-head"><span className="card-title">Cash Flow — Last 6 Months</span><span className="badge badge-blue">Monthly</span></div>
@@ -238,7 +661,6 @@ export default function Dashboard() {
               ))}
             </div>
           </div>
-
           <div className="card">
             <div className="card-head">
               <span className="card-title">Bank Reconciliation</span>
@@ -312,42 +734,13 @@ export default function Dashboard() {
             <div style={{ padding:'48px 0', textAlign:'center', color:'var(--text-3)' }}>
               <div style={{ fontSize:'2rem', marginBottom:8 }}>📭</div>
               <div style={{ fontSize:13 }}>No transactions yet</div>
-              <button className="btn btn-primary btn-sm" style={{ marginTop:12 }} onClick={()=>setModal(true)}><Plus size={12}/> Post First Voucher</button>
+              <button className="btn btn-primary btn-sm" style={{ marginTop:12 }} onClick={()=>openModal()}><Plus size={12}/> Post First Voucher</button>
             </div>
           )}
         </div>
       </div>
 
-      {modal && (
-        <div className="overlay" onClick={()=>setModal(false)}>
-          <div className="modal" onClick={e=>e.stopPropagation()}>
-            <div className="modal-head">
-              <span className="modal-title">New Journal Entry</span>
-              <button className="btn btn-ghost btn-icon" onClick={()=>setModal(false)}><X size={17}/></button>
-            </div>
-            <div className="modal-body">
-              <div className="field-group">
-                <label className="field-label">Voucher Type</label>
-                <select className="input" value={vForm.type} onChange={e=>setVForm(f=>({...f,type:e.target.value}))}>
-                  <option value="sales">Sales Invoice</option><option value="purchase">Purchase Invoice</option>
-                  <option value="payment">Payment Voucher</option><option value="receipt">Receipt Voucher</option>
-                  <option value="journal">Journal Voucher</option><option value="contra">Contra</option>
-                </select>
-              </div>
-              <div className="input-group">
-                <div className="field-group"><label className="field-label">Date</label><input type="date" className="input" value={vForm.date} onChange={e=>setVForm(f=>({...f,date:e.target.value}))}/></div>
-                <div className="field-group"><label className="field-label">Reference No.</label><input type="text" className="input" placeholder="INV-0001" value={vForm.reference} onChange={e=>setVForm(f=>({...f,reference:e.target.value}))}/></div>
-              </div>
-              <div className="field-group"><label className="field-label">Narration *</label><input type="text" className="input" placeholder="Describe the transaction" value={vForm.narration} onChange={e=>setVForm(f=>({...f,narration:e.target.value}))}/></div>
-              <div className="field-group"><label className="field-label">Amount (₹) *</label><input type="number" className="input" placeholder="0.00" value={vForm.amount} onChange={e=>setVForm(f=>({...f,amount:e.target.value}))}/></div>
-            </div>
-            <div className="modal-foot">
-              <button className="btn btn-secondary" onClick={()=>setModal(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={handlePostVoucher}>Post Voucher</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {modal && <JournalModal onClose={()=>setModal(false)} companyId={activeCompany?.id} onPosted={handlePosted} defaultType={defaultType}/>}
     </div>
   )
 }
