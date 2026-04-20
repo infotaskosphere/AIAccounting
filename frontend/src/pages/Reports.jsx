@@ -6,111 +6,6 @@ import { fmt } from '../utils/format'
 import { computeFinancials } from '../api/companyStore'
 import { useAuth } from '../context/AuthContext'
 
-// ─── Data ────────────────────────────────────────────────────────────────────
-
-const CY = 'FY 2024-25 (Apr 2023 – Mar 2024)'
-const PY = 'FY 2023-24 (Apr 2022 – Mar 2023)'
-
-// P&L data — Schedule III Part II
-const PL = {
-  revenue: {
-    salesProducts:   2840000, salesServices:  1980000,
-    salesReturns:    125000,
-    otherIncome:     { interest:28000, dividend:12000, misc:8000 }
-  },
-  expenses: {
-    openingStock:    320000, closingStock: 380000,
-    purchases:       1640000, purchaseReturns: 45000,
-    freightInward:   38000,
-    salaries:        1840000, pfEmployer: 32000, esicEmployer: 1600, staffWelfare: 24000,
-    depreciation:    98000,
-    bankInterest:    42000, bankCharges: 12400,
-    rent:            480000, electricity: 84000, internet: 36000,
-    software:        124000, advertising: 96000, travel: 48000,
-    professional:    120000, repairs: 32000, printing: 18000, insurance: 36000,
-  },
-  tax: { currentTax: 280000, deferredTax: 45000 }
-}
-
-// Computed P&L
-const grossRevenue  = PL.revenue.salesProducts + PL.revenue.salesServices - PL.revenue.salesReturns
-const otherIncome   = PL.revenue.otherIncome.interest + PL.revenue.otherIncome.dividend + PL.revenue.otherIncome.misc
-const totalRevenue  = grossRevenue + otherIncome
-const cogs          = PL.expenses.openingStock + PL.expenses.purchases - PL.expenses.purchaseReturns + PL.expenses.freightInward - PL.expenses.closingStock
-const employeeCost  = PL.expenses.salaries + PL.expenses.pfEmployer + PL.expenses.esicEmployer + PL.expenses.staffWelfare
-const financeCosts  = PL.expenses.bankInterest + PL.expenses.bankCharges
-const otherExpenses = PL.expenses.rent + PL.expenses.electricity + PL.expenses.internet + PL.expenses.software +
-                      PL.expenses.advertising + PL.expenses.travel + PL.expenses.professional +
-                      PL.expenses.repairs + PL.expenses.printing + PL.expenses.insurance
-const totalExpenses = cogs + employeeCost + PL.expenses.depreciation + financeCosts + otherExpenses
-const pbt           = totalRevenue - totalExpenses
-const tax           = PL.tax.currentTax + PL.tax.deferredTax
-const pat           = pbt - tax
-
-// Balance Sheet data — Schedule III Part I
-const BS = {
-  equity: {
-    shareCapital: 1000000, generalReserve: 500000, plBalance: 613300,
-  },
-  nonCurrentLiab: {
-    termLoan: 800000, vehicleLoan: 220000, deferredTaxLiab: 45000,
-  },
-  currentLiab: {
-    tradePayables: 346000, outputCGST: 72000, outputSGST: 72000,
-    tdsPayable: 18500, pfPayable: 30000, esicPayable: 1500,
-    salaryPayable: 349250, advanceFromCustomers: 50000,
-  },
-  nonCurrentAssets: {
-    landBuilding: 1200000, plantMachinery: 680000, furniture: 95000,
-    computers: 145000, vehicles: 380000, accDep: -320000,
-    investments: 250000, securityDeposits: 120000,
-  },
-  currentAssets: {
-    stockInTrade: 380000, rawMaterials: 140000, wip: 85000,
-    debtors: 842000, billsReceivable: 95000,
-    cashInHand: 45200, hdfcBank: 1284500, sbiBank: 320000,
-    inputCGST: 38400, inputSGST: 38400, tdsReceivable: 24000,
-    prepaid: 35000, advanceToSuppliers: 60000,
-  }
-}
-
-const totalEquity      = BS.equity.shareCapital + BS.equity.generalReserve + BS.equity.plBalance
-const totalNCLiab      = BS.nonCurrentLiab.termLoan + BS.nonCurrentLiab.vehicleLoan + BS.nonCurrentLiab.deferredTaxLiab
-const totalCLiab       = Object.values(BS.currentLiab).reduce((a,b) => a+b, 0)
-const totalEqLiab      = totalEquity + totalNCLiab + totalCLiab
-const fixedAssetsGross = BS.nonCurrentAssets.landBuilding + BS.nonCurrentAssets.plantMachinery + BS.nonCurrentAssets.furniture + BS.nonCurrentAssets.computers + BS.nonCurrentAssets.vehicles
-const totalNCA         = fixedAssetsGross + BS.nonCurrentAssets.accDep + BS.nonCurrentAssets.investments + BS.nonCurrentAssets.securityDeposits
-const totalCA          = Object.values(BS.currentAssets).reduce((a,b) => a+b, 0)
-const totalAssets      = totalNCA + totalCA
-
-// Cash Flow data — AS-3 Indirect Method
-const CF = {
-  operating: {
-    netProfit: pat,
-    adjustments: { depreciation: 98000, interestExpense: 42000, interestIncome: -28000, dividendIncome: -12000 },
-    workingCapital: { debtors: -122000, inventory: -85000, creditors: -26000, otherCurrentLiab: 15050, otherCurrentAssets: -18400 },
-    tax_paid: -280000,
-  },
-  investing: {
-    purchaseFA: -55000, saleFA: 0, purchaseInvestments: 0, saleInvestments: 0,
-    interestReceived: 28000, dividendReceived: 12000, capitalExpenditure: 0,
-  },
-  financing: {
-    proceedsBorrowings: 0, repaymentBorrowings: -280000,
-    interestPaid: -42000, dividendPaid: 0,
-  },
-  openingCash: 1322000,
-}
-const cfOpsAdj     = Object.values(CF.operating.adjustments).reduce((a,b)=>a+b,0)
-const cfOpsWC      = Object.values(CF.operating.workingCapital).reduce((a,b)=>a+b,0)
-const cfFromOps    = CF.operating.netProfit + cfOpsAdj + cfOpsWC + CF.operating.tax_paid
-const cfFromInvest = Object.values(CF.investing).reduce((a,b)=>a+b,0)
-const cfFromFin    = Object.values(CF.financing).reduce((a,b)=>a+b,0)
-const netCashChange= cfFromOps + cfFromInvest + cfFromFin
-const closingCash  = CF.openingCash + netCashChange
-
-// ─── Components ──────────────────────────────────────────────────────────────
-
 function Section({ title, children }) {
   return (
     <div style={{ marginBottom:24 }}>
@@ -417,6 +312,151 @@ function CashFlow() {
   )
 }
 
+// ─── Empty Report (shown when no vouchers posted) ─────────────────────────────
+function EmptyReport({ label }) {
+  return (
+    <div className="card" style={{ padding:'80px 0', textAlign:'center', color:'var(--text-3)' }}>
+      <div style={{ fontSize:'2.5rem', marginBottom:12 }}>📈</div>
+      <div style={{ fontSize:14, fontWeight:600, marginBottom:6, color:'var(--text-2)' }}>{label} will appear here</div>
+      <div style={{ fontSize:12 }}>Post sales, purchase, or payment entries from the Dashboard to generate this report.</div>
+    </div>
+  )
+}
+
+// ─── Real P&L from vouchers ────────────────────────────────────────────────────
+function ProfitLoss({ fin }) {
+  const Row = ({ label, value, bold, indent, color }) => (
+    <tr style={{ borderBottom:'1px solid var(--border)' }}>
+      <td style={{ padding:'8px 14px 8px '+(indent?28:14)+'px', fontSize:'0.83rem', fontWeight: bold?700:400, color: color||'var(--text)' }}>{label}</td>
+      <td style={{ padding:'8px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.83rem', fontWeight: bold?700:400, color: color||(value<0?'var(--danger)':'var(--text)') }}>
+        {value === 0 ? '—' : (value < 0 ? `(${fmt(Math.abs(value))})` : fmt(value))}
+      </td>
+      <td style={{ padding:'8px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.83rem', color:'var(--text-4)' }}>—</td>
+    </tr>
+  )
+
+  const salesRevenue = fin.vouchers.filter(v=>v.voucher_type==='sales').reduce((s,v)=>s+(Number(v.amount)||0),0)
+  const purchases    = fin.vouchers.filter(v=>v.voucher_type==='purchase').reduce((s,v)=>s+(Number(v.amount)||0),0)
+  const grossProfit  = salesRevenue - purchases
+  const netProfit    = fin.net_profit
+
+  return (
+    <div className="card" style={{ overflow:'auto' }}>
+      <table style={{ width:'100%', borderCollapse:'collapse' }}>
+        <thead>
+          <tr style={{ background:'var(--surface-2)', borderBottom:'2px solid var(--border)' }}>
+            <th style={{ padding:'10px 14px', fontSize:'0.75rem', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text-3)', textAlign:'left' }}>Particulars</th>
+            <th style={{ padding:'10px 14px', fontSize:'0.75rem', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text-3)', textAlign:'right' }}>Current Year (₹)</th>
+            <th style={{ padding:'10px 14px', fontSize:'0.75rem', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text-3)', textAlign:'right' }}>Previous Year (₹)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <Row label="I. REVENUE FROM OPERATIONS" value={salesRevenue} bold/>
+          <Row label="   Sales / Services" value={salesRevenue} indent/>
+          <Row label="II. OTHER INCOME" value={0} bold/>
+          <Row label="III. TOTAL INCOME (I + II)" value={salesRevenue} bold color="var(--success)"/>
+          <Row label="IV. EXPENSES" value={0} bold/>
+          <Row label="   Cost of Materials / Purchases" value={purchases} indent/>
+          <Row label="   Employee Benefit Expenses" value={0} indent/>
+          <Row label="   Finance Costs" value={0} indent/>
+          <Row label="   Depreciation & Amortisation" value={0} indent/>
+          <Row label="   Other Expenses" value={0} indent/>
+          <Row label="TOTAL EXPENSES" value={purchases} bold/>
+          <Row label="V. PROFIT BEFORE TAX (III – IV)" value={grossProfit} bold color={grossProfit>=0?'var(--success)':'var(--danger)'}/>
+          <Row label="   Tax Expense" value={0} indent/>
+          <Row label="VI. PROFIT AFTER TAX" value={netProfit} bold color={netProfit>=0?'var(--success)':'var(--danger)'}/>
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// ─── Real Balance Sheet from vouchers ─────────────────────────────────────────
+function BalanceSheet({ fin }) {
+  const Section = ({ title }) => (
+    <tr style={{ background:'var(--surface-2)' }}>
+      <td colSpan={3} style={{ padding:'10px 14px', fontWeight:700, fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em', color:'var(--text-3)' }}>{title}</td>
+    </tr>
+  )
+  const Row = ({ label, value, bold, indent }) => (
+    <tr style={{ borderBottom:'1px solid var(--border)' }}>
+      <td style={{ padding:'8px 14px 8px '+(indent?28:14)+'px', fontSize:'0.83rem', fontWeight:bold?700:400 }}>{label}</td>
+      <td style={{ padding:'8px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.83rem', fontWeight:bold?700:400 }}>
+        {value === 0 ? '—' : fmt(value)}
+      </td>
+      <td style={{ padding:'8px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.83rem', color:'var(--text-4)' }}>—</td>
+    </tr>
+  )
+
+  const salesAmt   = fin.vouchers.filter(v=>v.voucher_type==='sales').reduce((s,v)=>s+(Number(v.amount)||0),0)
+  const receiptAmt = fin.vouchers.filter(v=>v.voucher_type==='receipt').reduce((s,v)=>s+(Number(v.amount)||0),0)
+  const payAmt     = fin.vouchers.filter(v=>v.voucher_type==='payment').reduce((s,v)=>s+(Number(v.amount)||0),0)
+  const purAmt     = fin.vouchers.filter(v=>v.voucher_type==='purchase').reduce((s,v)=>s+(Number(v.amount)||0),0)
+
+  return (
+    <div className="card" style={{ overflow:'auto' }}>
+      <table style={{ width:'100%', borderCollapse:'collapse' }}>
+        <thead>
+          <tr style={{ background:'var(--surface-2)', borderBottom:'2px solid var(--border)' }}>
+            <th style={{ padding:'10px 14px', fontSize:'0.75rem', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text-3)', textAlign:'left' }}>Particulars</th>
+            <th style={{ padding:'10px 14px', fontSize:'0.75rem', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text-3)', textAlign:'right' }}>Current Year (₹)</th>
+            <th style={{ padding:'10px 14px', fontSize:'0.75rem', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text-3)', textAlign:'right' }}>Previous Year (₹)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <Section title="EQUITY & LIABILITIES"/>
+          <Row label="Share Capital" value={0} indent/>
+          <Row label="Reserves & Surplus (P&L)" value={fin.net_profit} indent/>
+          <Row label="Trade Payables (Creditors)" value={purAmt - payAmt} indent/>
+          <Row label="TOTAL EQUITY & LIABILITIES" value={fin.liabilities} bold/>
+          <Section title="ASSETS"/>
+          <Row label="Trade Receivables (Debtors)" value={salesAmt - receiptAmt} indent/>
+          <Row label="Cash & Bank" value={receiptAmt - payAmt} indent/>
+          <Row label="TOTAL ASSETS" value={fin.assets} bold color="var(--success)"/>
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// ─── Cash Flow (real) ──────────────────────────────────────────────────────────
+function CashFlow({ fin }) {
+  const inflow  = fin.vouchers.filter(v=>['sales','receipt'].includes(v.voucher_type)).reduce((s,v)=>s+(Number(v.amount)||0),0)
+  const outflow = fin.vouchers.filter(v=>['purchase','payment'].includes(v.voucher_type)).reduce((s,v)=>s+(Number(v.amount)||0),0)
+  const net     = inflow - outflow
+  const Row = ({ label, value, bold, indent, color }) => (
+    <tr style={{ borderBottom:'1px solid var(--border)' }}>
+      <td style={{ padding:'8px 14px 8px '+(indent?28:14)+'px', fontSize:'0.83rem', fontWeight:bold?700:400 }}>{label}</td>
+      <td style={{ padding:'8px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.83rem', fontWeight:bold?700:400, color:color||(value<0?'var(--danger)':'var(--text)') }}>
+        {value === 0 ? '—' : (value<0?`(${fmt(Math.abs(value))})`:fmt(value))}
+      </td>
+    </tr>
+  )
+  return (
+    <div className="card" style={{ overflow:'auto' }}>
+      <table style={{ width:'100%', borderCollapse:'collapse' }}>
+        <thead>
+          <tr style={{ background:'var(--surface-2)', borderBottom:'2px solid var(--border)' }}>
+            <th style={{ padding:'10px 14px', fontSize:'0.75rem', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text-3)', textAlign:'left' }}>Particulars</th>
+            <th style={{ padding:'10px 14px', fontSize:'0.75rem', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text-3)', textAlign:'right' }}>Amount (₹)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <Row label="A. CASH FLOW FROM OPERATING ACTIVITIES" bold value={0}/>
+          <Row label="   Cash receipts from customers" value={inflow} indent/>
+          <Row label="   Cash paid to suppliers / employees" value={-outflow} indent/>
+          <Row label="Net Cash from Operations" value={net} bold color={net>=0?'var(--success)':'var(--danger)'}/>
+          <Row label="B. CASH FLOW FROM INVESTING ACTIVITIES" bold value={0}/>
+          <Row label="   No investing activities" value={0} indent/>
+          <Row label="C. CASH FLOW FROM FINANCING ACTIVITIES" bold value={0}/>
+          <Row label="   No financing activities" value={0} indent/>
+          <Row label="NET CHANGE IN CASH" value={net} bold color={net>=0?'var(--success)':'var(--danger)'}/>
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function Reports() {
   const { activeCompany } = useAuth()
@@ -443,7 +483,7 @@ export default function Reports() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Financial Reports</h1>
-          <p className="page-subtitle">{subtitles[tab]} · Acme Corp Pvt Ltd · {CY}</p>
+          <p className="page-subtitle">{subtitles[tab]} · {activeCompany?.name} · {activeCompany?.fy}</p>
         </div>
         <div className="page-actions">
           <button className="btn btn-secondary"><Download size={15}/> Export PDF</button>
@@ -471,9 +511,9 @@ export default function Reports() {
         ))}
       </div>
 
-      {tab === 'pl'            && <ProfitLoss/>}
-      {tab === 'balance-sheet' && <BalanceSheet/>}
-      {tab === 'cashflow'      && <CashFlow/>}
+      {tab === 'pl'            && (isSampleData ? <EmptyReport label="Profit & Loss Statement" /> : <ProfitLoss fin={fin}/>)}
+      {tab === 'balance-sheet' && (isSampleData ? <EmptyReport label="Balance Sheet" /> : <BalanceSheet fin={fin}/>)}
+      {tab === 'cashflow'      && (isSampleData ? <EmptyReport label="Cash Flow Statement" /> : <CashFlow fin={fin}/>)}
     </div>
   )
 }
