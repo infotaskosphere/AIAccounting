@@ -1,12 +1,15 @@
 // src/pages/Payroll.jsx
 import { useState } from 'react'
-import { Users, Download, Play, CheckCircle, TrendingUp } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Users, Download, Play, CheckCircle, TrendingUp, UserCircle, FileText } from 'lucide-react'
 import { mockPayroll } from '../api/mockData'
 import { fmt, fmtCr } from '../utils/format'
 
 const PERIODS = ['March 2024', 'February 2024', 'January 2024']
 
 export default function Payroll() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = searchParams.get('tab') || 'salary'
   const [period, setPeriod] = useState('March 2024')
   const [ran, setRan]       = useState(false)
   const [loading, setLoading] = useState(false)
@@ -30,7 +33,7 @@ export default function Payroll() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Payroll</h1>
-          <p className="page-subtitle">Process salary, PF, ESIC and TDS for all employees</p>
+          <p className="page-subtitle">Salary processing · Employee master · PF / ESIC / TDS compliance</p>
         </div>
         <div className="page-actions">
           <div>
@@ -39,26 +42,45 @@ export default function Payroll() {
             </select>
           </div>
           <button className="btn btn-secondary"><Download size={15} /> Export</button>
-          <button className="btn btn-primary" onClick={handleRun} disabled={loading || ran}>
-            {loading
-              ? <><span style={{ width: 14, height: 14, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: 'white', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} /> Processing...</>
-              : ran
-              ? <><CheckCircle size={15} /> Payroll Posted</>
-              : <><Play size={15} /> Run Payroll</>
-            }
-          </button>
+          {tab === 'salary' && (
+            <button className="btn btn-primary" onClick={handleRun} disabled={loading || ran}>
+              {loading
+                ? <><span style={{ width: 14, height: 14, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: 'white', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} /> Processing...</>
+                : ran
+                ? <><CheckCircle size={15} /> Payroll Posted</>
+                : <><Play size={15} /> Run Payroll</>
+              }
+            </button>
+          )}
         </div>
       </div>
 
-      {ran && (
+      {/* Tab Bar */}
+      <div style={{ display:'flex', gap:2, marginBottom:20, background:'var(--surface-2)', padding:4, borderRadius:'var(--r-md)', width:'fit-content', border:'1px solid var(--border)' }}>
+        {[
+          { key:'salary',     label:'Salary Processing', icon:Play },
+          { key:'employees',  label:'Employee Master',   icon:UserCircle },
+          { key:'statutory',  label:'PF / ESIC / TDS',   icon:FileText },
+        ].map(t => (
+          <button key={t.key}
+            onClick={() => setSearchParams({ tab: t.key })}
+            className={tab===t.key ? 'btn btn-primary' : 'btn btn-secondary'}
+            style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 16px', fontSize:'0.83rem' }}>
+            <t.icon size={14}/> {t.label}
+          </button>
+        ))}
+      </div>
+
+      {ran && tab === 'salary' && (
         <div className="alert-banner success" style={{ marginBottom: 20 }}>
           <CheckCircle size={15} />
           <span className="alert-msg">Payroll for {period} processed successfully · Journal entries posted · Bank transfer file ready</span>
         </div>
+
       )}
 
       {/* KPI Cards */}
-      <div className="kpi-grid" style={{ marginBottom: 24 }}>
+      {tab === 'salary' && <div className="kpi-grid" style={{ marginBottom: 24 }}>
         {summary.map(s => (
           <div key={s.label} className={`kpi-card ${s.color}`}>
             <div className="kpi-label">{s.label}</div>
@@ -225,6 +247,144 @@ export default function Payroll() {
           </div>
         </div>
       </div>
+      }
+
+      {/* Employee Master Tab */}
+      {tab === 'employees' && (
+        <div className="card" style={{ overflow:'hidden' }}>
+          <div style={{ padding:'12px 16px', borderBottom:'1px solid var(--border)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+            <span style={{ fontWeight:700, fontSize:'0.85rem' }}>Employee Master — {payroll.employees.length} Active Employees</span>
+            <button className="btn btn-primary" style={{ fontSize:'0.8rem' }}><Users size={13}/> Add Employee</button>
+          </div>
+          <table style={{ width:'100%', borderCollapse:'collapse' }}>
+            <thead>
+              <tr style={{ background:'var(--surface-2)', borderBottom:'1px solid var(--border)' }}>
+                {['Emp ID','Name','Designation','Basic (₹)','HRA (₹)','Special Allow. (₹)','Gross CTC (₹)','PF','ESIC','Status'].map(h => (
+                  <th key={h} style={{ padding:'9px 14px', fontSize:'0.72rem', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text-3)', textAlign: h.includes('₹') ? 'right' : 'left' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {payroll.employees.map((e,i) => (
+                <tr key={e.id} style={{ borderBottom:'1px solid var(--border)' }}>
+                  <td style={{ padding:'9px 14px', fontFamily:'var(--font-mono)', fontSize:'0.78rem', color:'var(--text-3)' }}>EMP-{String(i+1).padStart(3,'0')}</td>
+                  <td style={{ padding:'9px 14px', fontWeight:600, fontSize:'0.83rem' }}>{e.name}</td>
+                  <td style={{ padding:'9px 14px', fontSize:'0.8rem', color:'var(--text-2)' }}>{e.designation}</td>
+                  <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem' }}>{fmt(e.basic)}</td>
+                  <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem' }}>{fmt(e.hra)}</td>
+                  <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem' }}>{fmt(e.special)}</td>
+                  <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem', fontWeight:700 }}>{fmt(e.gross)}</td>
+                  <td style={{ padding:'9px 14px', textAlign:'center' }}><span className={e.pf > 0 ? 'badge badge-green' : 'badge badge-gray'}>{e.pf > 0 ? '✓' : '—'}</span></td>
+                  <td style={{ padding:'9px 14px', textAlign:'center' }}><span className={e.esic > 0 ? 'badge badge-green' : 'badge badge-gray'}>{e.esic > 0 ? '✓' : 'Exempt'}</span></td>
+                  <td style={{ padding:'9px 14px' }}><span className="badge badge-green">Active</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* PF / ESIC / TDS Statutory Tab */}
+      {tab === 'statutory' && (
+        <div style={{ display:'grid', gap:16 }}>
+          {/* PF Summary */}
+          <div className="card">
+            <div style={{ padding:'12px 16px', borderBottom:'1px solid var(--border)', fontWeight:700, fontSize:'0.85rem', display:'flex', justifyContent:'space-between' }}>
+              <span>Provident Fund (PF) — {period}</span>
+              <span style={{ fontSize:'0.75rem', color:'var(--text-3)', fontWeight:400 }}>Employee: 12% of Basic · Employer: 12% of Basic</span>
+            </div>
+            <table style={{ width:'100%', borderCollapse:'collapse' }}>
+              <thead><tr style={{ background:'var(--surface-2)', borderBottom:'1px solid var(--border)' }}>
+                {['Employee','Basic (₹)','Employee PF @ 12% (₹)','Employer PF @ 12% (₹)','Total PF (₹)'].map(h => (
+                  <th key={h} style={{ padding:'9px 14px', fontSize:'0.72rem', fontWeight:700, textTransform:'uppercase', color:'var(--text-3)', textAlign: h.includes('₹') ? 'right' : 'left' }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {payroll.employees.map(e => (
+                  <tr key={e.id} style={{ borderBottom:'1px solid var(--border)' }}>
+                    <td style={{ padding:'9px 14px', fontSize:'0.83rem', fontWeight:500 }}>{e.name}</td>
+                    <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem' }}>{fmt(e.basic)}</td>
+                    <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem' }}>{fmt(e.pf)}</td>
+                    <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem' }}>{fmt(e.pf)}</td>
+                    <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem', fontWeight:700 }}>{fmt(e.pf * 2)}</td>
+                  </tr>
+                ))}
+                <tr style={{ background:'var(--primary-l)', borderTop:'2px solid var(--border)' }}>
+                  <td style={{ padding:'9px 14px', fontWeight:700 }}>TOTAL</td>
+                  <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontWeight:700 }}>{fmt(payroll.employees.reduce((s,e)=>s+e.basic,0))}</td>
+                  <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontWeight:700 }}>{fmt(payroll.totals.pf_employee)}</td>
+                  <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontWeight:700 }}>{fmt(payroll.totals.pf_employee)}</td>
+                  <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontWeight:700 }}>{fmt(payroll.totals.pf_employee * 2)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* ESIC Summary */}
+          <div className="card">
+            <div style={{ padding:'12px 16px', borderBottom:'1px solid var(--border)', fontWeight:700, fontSize:'0.85rem', display:'flex', justifyContent:'space-between' }}>
+              <span>ESIC — {period}</span>
+              <span style={{ fontSize:'0.75rem', color:'var(--text-3)', fontWeight:400 }}>Applicable if Gross ≤ ₹21,000 · Employee: 0.75% · Employer: 3.25%</span>
+            </div>
+            <table style={{ width:'100%', borderCollapse:'collapse' }}>
+              <thead><tr style={{ background:'var(--surface-2)', borderBottom:'1px solid var(--border)' }}>
+                {['Employee','Gross (₹)','ESIC Applicable','Employee ESIC @ 0.75%','Employer ESIC @ 3.25%','Total (₹)'].map(h => (
+                  <th key={h} style={{ padding:'9px 14px', fontSize:'0.72rem', fontWeight:700, textTransform:'uppercase', color:'var(--text-3)', textAlign: h.includes('₹') ? 'right' : 'left' }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {payroll.employees.map(e => {
+                  const applicable = e.gross <= 21000
+                  const empEsic = applicable ? Math.round(e.gross * 0.0075) : 0
+                  const emplrEsic = applicable ? Math.round(e.gross * 0.0325) : 0
+                  return (
+                    <tr key={e.id} style={{ borderBottom:'1px solid var(--border)' }}>
+                      <td style={{ padding:'9px 14px', fontSize:'0.83rem', fontWeight:500 }}>{e.name}</td>
+                      <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem' }}>{fmt(e.gross)}</td>
+                      <td style={{ padding:'9px 14px', textAlign:'center' }}><span className={applicable ? 'badge badge-green' : 'badge badge-gray'}>{applicable ? 'Yes' : 'Exempt'}</span></td>
+                      <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem' }}>{empEsic > 0 ? fmt(empEsic) : '—'}</td>
+                      <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem' }}>{emplrEsic > 0 ? fmt(emplrEsic) : '—'}</td>
+                      <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem', fontWeight:700 }}>{(empEsic+emplrEsic) > 0 ? fmt(empEsic+emplrEsic) : '—'}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* TDS Summary */}
+          <div className="card">
+            <div style={{ padding:'12px 16px', borderBottom:'1px solid var(--border)', fontWeight:700, fontSize:'0.85rem', display:'flex', justifyContent:'space-between' }}>
+              <span>TDS on Salary (Section 192) — {period}</span>
+              <span style={{ fontSize:'0.75rem', color:'var(--text-3)', fontWeight:400 }}>As per Income Tax slabs (New Regime default)</span>
+            </div>
+            <table style={{ width:'100%', borderCollapse:'collapse' }}>
+              <thead><tr style={{ background:'var(--surface-2)', borderBottom:'1px solid var(--border)' }}>
+                {['Employee','Annual Gross (₹)','Standard Deduction (₹)','Taxable Income (₹)','Monthly TDS (₹)','Challan (ITNS 281)'].map(h => (
+                  <th key={h} style={{ padding:'9px 14px', fontSize:'0.72rem', fontWeight:700, textTransform:'uppercase', color:'var(--text-3)', textAlign: h.includes('₹') ? 'right' : 'left' }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {payroll.employees.map(e => (
+                  <tr key={e.id} style={{ borderBottom:'1px solid var(--border)' }}>
+                    <td style={{ padding:'9px 14px', fontSize:'0.83rem', fontWeight:500 }}>{e.name}</td>
+                    <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem' }}>{fmt(e.gross * 12)}</td>
+                    <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem' }}>50,000</td>
+                    <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem' }}>{fmt(e.gross * 12 - 50000)}</td>
+                    <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontSize:'0.82rem', fontWeight:700, color: e.tds > 0 ? 'var(--danger)' : 'var(--text-4)' }}>{e.tds > 0 ? fmt(e.tds) : '—'}</td>
+                    <td style={{ padding:'9px 14px' }}><span className={e.tds > 0 ? 'badge badge-amber' : 'badge badge-gray'}>{e.tds > 0 ? 'Pending' : 'N/A'}</span></td>
+                  </tr>
+                ))}
+                <tr style={{ background:'var(--primary-l)', borderTop:'2px solid var(--border)' }}>
+                  <td colSpan={4} style={{ padding:'9px 14px', fontWeight:700 }}>TOTAL MONTHLY TDS DEPOSIT</td>
+                  <td style={{ padding:'9px 14px', textAlign:'right', fontFamily:'var(--font-mono)', fontWeight:700, color:'var(--danger)' }}>{fmt(payroll.totals.tds)}</td>
+                  <td style={{ padding:'9px 14px' }}><span className="badge badge-amber">Due 7th of next month</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
