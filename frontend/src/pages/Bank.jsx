@@ -1,7 +1,8 @@
 // src/pages/Bank.jsx
 import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, CheckCircle, X, Zap, AlertCircle, RefreshCw, FileText } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Upload, CheckCircle, X, Zap, AlertCircle, RefreshCw, FileText, CreditCard } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { mockBankTransactions } from '../api/mockData'
 import { fmt, fmtDate } from '../utils/format'
@@ -25,6 +26,8 @@ const ConfBar = ({ value, color }) => (
 )
 
 export default function Bank() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = searchParams.get('tab') || 'accounts'
   const [transactions, setTransactions] = useState(mockBankTransactions)
   const [filter, setFilter]             = useState('all')
   const [loading, setLoading]           = useState(false)
@@ -99,8 +102,8 @@ export default function Bank() {
       {/* Header */}
       <div className="page-header">
         <div>
-          <h1 className="page-title">Bank & Reconciliation</h1>
-          <p className="page-subtitle">Import statements · AI auto-matches · Manual review</p>
+          <h1 className="page-title">Banking</h1>
+          <p className="page-subtitle">Bank accounts · Reconciliation · Import statements</p>
         </div>
         <div className="page-actions">
           <button className="btn btn-secondary">
@@ -113,6 +116,22 @@ export default function Bank() {
             }
           </button>
         </div>
+      </div>
+
+      {/* Tab Bar */}
+      <div style={{ display:'flex', gap:2, marginBottom:20, background:'var(--surface-2)', padding:4, borderRadius:'var(--r-md)', width:'fit-content', border:'1px solid var(--border)' }}>
+        {[
+          { key:'accounts',    label:'Bank Accounts',    icon:CreditCard },
+          { key:'reconcile',   label:'Reconciliation',   icon:RefreshCw },
+          { key:'import',      label:'Import Statement', icon:Upload },
+        ].map(t => (
+          <button key={t.key}
+            onClick={() => setSearchParams({ tab: t.key })}
+            className={tab===t.key ? 'btn btn-primary' : 'btn btn-secondary'}
+            style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 16px', fontSize:'0.83rem' }}>
+            <t.icon size={14}/> {t.label}
+          </button>
+        ))}
       </div>
 
       {/* Stats */}
