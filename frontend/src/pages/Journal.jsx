@@ -11,16 +11,6 @@ const PAGE_SIZE = 6
 const voucherBadge = { sales:'badge-green', purchase:'badge-red', receipt:'badge-blue', payment:'badge-amber', journal:'badge-gray' }
 const sourceBadge  = { manual:'badge-gray', invoice_webhook:'badge-purple', bank_import:'badge-blue', payment_gateway:'badge-green', ai_suggested:'badge-blue' }
 
-// Convert file to base64
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result.split(',')[1])
-    reader.onerror = () => reject(new Error('Failed to read file'))
-    reader.readAsDataURL(file)
-  })
-}
-
 function VoucherModal({ onClose, companyId, onPosted }) {
   const [tab, setTab]         = useState('manual')
   const [form, setForm]       = useState({ type:'sales', date:new Date().toISOString().slice(0,10), reference:'', party:'', narration:'', amount:'', cgst:'', sgst:'', igst:'' })
@@ -31,42 +21,26 @@ function VoucherModal({ onClose, companyId, onPosted }) {
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
-  // Real AI invoice parsing via Anthropic API
+  // AI invoice parsing via backend (fixes CORS — no direct Anthropic browser calls)
   const handleFile = async (file) => {
     if (!file) return
     if (!file.name.match(/\.(pdf|png|jpg|jpeg)$/i)) { toast.error('Upload a PDF or image invoice'); return }
     setParsing(true)
     try {
-      const base64 = await fileToBase64(file)
-      const isPdf  = file.name.toLowerCase().endsWith('.pdf')
-      const isImg  = file.name.match(/\.(png|jpg|jpeg)$/i)
-
-      const contentBlock = isPdf
-        ? { type:'document', source:{ type:'base64', media_type:'application/pdf', data:base64 } }
-        : { type:'image',    source:{ type:'base64', media_type:'image/jpeg',        data:base64 } }
-
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const formData = new FormData()
+      formData.append('file', file)
+      const token = localStorage.getItem('token')
+      const response = await fetch('/api/v1/invoice/parse', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 500,
-          messages: [{
-            role: 'user',
-            content: [
-              contentBlock,
-              { type:'text', text:`Extract invoice data from this document. Return ONLY a JSON object (no markdown): {"type":"purchase or sales","date":"YYYY-MM-DD","reference":"invoice number","party":"company name","narration":"brief description of goods/services","amount":"taxable amount as number","cgst":"CGST amount or 0","sgst":"SGST amount or 0","igst":"IGST amount or 0","total":"total amount"}` }
-            ]
-          }]
-        })
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
       })
-
-      if (!response.ok) throw new Error(`API error ${response.status}`)
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}))
+        throw new Error(err.detail || `Server error ${response.status}`)
+      }
       const result = await response.json()
-      const text = result.content?.find(c => c.type === 'text')?.text || '{}'
-      const cleaned = text.replace(/```json|```/g, '').trim()
-      const data = JSON.parse(cleaned)
-
+      const data = result.data || {}
       setParsed(data)
       setForm(f => ({ ...f, ...data }))
       toast.success('Invoice data extracted! Review and post.')
