@@ -513,6 +513,13 @@ export default function Bank() {
   const [minAmount,    setMinAmount]    = useState('')
   const [maxAmount,    setMaxAmount]    = useState('')
   const [txnTypeFilter,setTxnTypeFilter]= useState('all')
+  // ── Bulk selection
+  const [bulkMode,       setBulkMode]       = useState(false)
+  const [selectedIds,    setSelectedIds]    = useState(new Set())
+  const [bulkAccount,    setBulkAccount]    = useState(ACCOUNT_OPTIONS[0])
+  const [bulkCustom,     setBulkCustom]     = useState('')
+  const [showBulkCustom, setShowBulkCustom] = useState(false)
+  const [showBulkPanel,  setShowBulkPanel]  = useState(false)
 
   const loadTxns = () => {
     const data = loadCompanyData(activeCompany?.id)
@@ -686,6 +693,69 @@ export default function Bank() {
     setEditAccount(val)
     setShowCustom(val === CUSTOM_SENTINEL)
     if (val !== CUSTOM_SENTINEL) setCustomAccount('')
+  }
+
+  // ── BULK HELPERS ─────────────────────────────────────────────────
+  const toggleBulkMode = () => {
+    setBulkMode(v => !v)
+    setSelectedIds(new Set())
+    setShowBulkPanel(false)
+  }
+
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  const selectAll = () => setSelectedIds(new Set(filtered.map(t => t.id)))
+  const deselectAll = () => setSelectedIds(new Set())
+
+  const handleBulkSelectChange = (val) => {
+    setBulkAccount(val)
+    setShowBulkCustom(val === CUSTOM_SENTINEL)
+    if (val !== CUSTOM_SENTINEL) setBulkCustom('')
+  }
+
+  const handleBulkApply = (action) => {
+    if (selectedIds.size === 0) return toast.error('Select at least one transaction')
+    const ids = [...selectedIds]
+
+    if (action === 'change_head') {
+      const head = showBulkCustom ? bulkCustom.trim() : bulkAccount
+      if (!head) return toast.error('Select an account head')
+      // Persist custom head if new
+      if (!allAccountOptions.includes(head)) {
+        addCustomHead(activeCompany?.id, head)
+        setCustomHeads(loadCustomHeads(activeCompany?.id))
+      }
+      ids.forEach(id => updateBankTransaction(activeCompany?.id, id, { ai_suggested_account: head }))
+      toast.success(`Account head updated for ${ids.length} transaction${ids.length > 1 ? 's' : ''} ✓`)
+    } else if (action === 'match') {
+      ids.forEach(id => updateBankTransaction(activeCompany?.id, id, { status: 'matched' }))
+      toast.success(`Matched ${ids.length} transaction${ids.length > 1 ? 's' : ''} ✓`)
+    } else if (action === 'ignore') {
+      ids.forEach(id => updateBankTransaction(activeCompany?.id, id, { status: 'ignored' }))
+      toast(`Ignored ${ids.length} transaction${ids.length > 1 ? 's' : ''}`, { icon: '🔕' })
+    } else if (action === 'unmatch') {
+      ids.forEach(id => updateBankTransaction(activeCompany?.id, id, { status: 'unmatched' }))
+      toast.success(`Unmatched ${ids.length} transaction${ids.length > 1 ? 's' : ''}`)
+    } else if (action === 'match_with_head') {
+      const head = showBulkCustom ? bulkCustom.trim() : bulkAccount
+      if (!head) return toast.error('Select an account head')
+      if (!allAccountOptions.includes(head)) {
+        addCustomHead(activeCompany?.id, head)
+        setCustomHeads(loadCustomHeads(activeCompany?.id))
+      }
+      ids.forEach(id => updateBankTransaction(activeCompany?.id, id, { status: 'matched', ai_suggested_account: head }))
+      toast.success(`Matched & categorised ${ids.length} transaction${ids.length > 1 ? 's' : ''} ✓`)
+    }
+
+    loadTxns()
+    setSelectedIds(new Set())
+    setShowBulkPanel(false)
   }
 
   const handleExportCSV = () => {
@@ -932,6 +1002,12 @@ export default function Bank() {
               <button className="btn btn-ghost btn-sm" onClick={() => setShowFilters(v => !v)} style={{ display:'flex', alignItems:'center', gap:4 }}>
                 <Filter size={12}/> Filters {showFilters ? '▲' : '▼'}
               </button>
+              <button
+                className={bulkMode ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm'}
+                onClick={toggleBulkMode}
+                style={{ display:'flex', alignItems:'center', gap:4 }}>
+                <CheckCircle size={12}/> {bulkMode ? `Bulk (${selectedIds.size})` : 'Bulk'}
+              </button>
             </div>
           </div>
 
@@ -959,6 +1035,81 @@ export default function Bank() {
               </button>
             ))}
           </div>
+
+          {/* ── BULK ACTION BAR ── */}
+          {bulkMode && (
+            <div style={{ padding:'10px 16px', background:'#EEF2FF', borderBottom:'1px solid #C7D2FE', display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+              {/* Select all / none */}
+              <input type="checkbox"
+                checked={filtered.length > 0 && selectedIds.size === filtered.length}
+                ref={el => { if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < filtered.length }}
+                onChange={e => e.target.checked ? selectAll() : deselectAll()}
+                style={{ width:15, height:15, cursor:'pointer', accentColor:'var(--primary)' }} />
+              <span style={{ fontSize:'0.78rem', color:'var(--primary)', fontWeight:600, minWidth:70 }}>
+                {selectedIds.size === 0 ? 'Select all' : `${selectedIds.size} selected`}
+              </span>
+
+              {selectedIds.size > 0 && (
+                <>
+                  <div style={{ width:1, height:20, background:'#C7D2FE' }} />
+
+                  {/* Quick actions */}
+                  <button className="btn btn-sm" style={{ background:'var(--success)', color:'white', gap:4, display:'flex', alignItems:'center' }}
+                    onClick={() => handleBulkApply('match')}><CheckCircle size={11}/> Match All</button>
+                  <button className="btn btn-ghost btn-sm" style={{ gap:4, display:'flex', alignItems:'center' }}
+                    onClick={() => handleBulkApply('ignore')}><X size={11}/> Ignore All</button>
+                  <button className="btn btn-ghost btn-sm" style={{ gap:4, display:'flex', alignItems:'center' }}
+                    onClick={() => handleBulkApply('unmatch')}><RefreshCw size={11}/> Unmatch All</button>
+
+                  <div style={{ width:1, height:20, background:'#C7D2FE' }} />
+
+                  {/* Change head */}
+                  <button className="btn btn-sm" style={{ background:'var(--primary)', color:'white', gap:4, display:'flex', alignItems:'center' }}
+                    onClick={() => setShowBulkPanel(v => !v)}>
+                    <Edit3 size={11}/> Change Head {showBulkPanel ? '▲' : '▼'}
+                  </button>
+
+                  <button className="btn btn-ghost btn-sm" style={{ marginLeft:'auto' }} onClick={deselectAll}>Clear</button>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── BULK HEAD PANEL ── */}
+          {bulkMode && showBulkPanel && selectedIds.size > 0 && (
+            <div style={{ padding:'12px 16px', background:'#F5F3FF', borderBottom:'1px solid #DDD6FE', display:'flex', flexDirection:'column', gap:10 }}>
+              <div style={{ fontSize:'0.75rem', fontWeight:700, color:'var(--primary)', textTransform:'uppercase', letterSpacing:'0.04em' }}>
+                Assign Account Head to {selectedIds.size} transaction{selectedIds.size > 1 ? 's' : ''}
+              </div>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'flex-start' }}>
+                <div style={{ flex:1, minWidth:200 }}>
+                  <select value={bulkAccount} onChange={e => handleBulkSelectChange(e.target.value)}
+                    style={{ width:'100%', height:32, border:'1px solid #C4B5FD', borderRadius:'var(--radius)', fontSize:'0.82rem', background:'white', color:'var(--text)', padding:'0 8px' }}>
+                    {ACCOUNT_OPTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+                    {customHeads.length > 0 && <option disabled>── Custom Heads ──</option>}
+                    {customHeads.map(a => <option key={a} value={a}>⭐ {a}</option>)}
+                    <option value={CUSTOM_SENTINEL}>➕ Add New Custom Head…</option>
+                  </select>
+                  {showBulkCustom && (
+                    <input autoFocus value={bulkCustom} onChange={e => setBulkCustom(e.target.value)}
+                      placeholder="Type custom account head…"
+                      style={{ width:'100%', marginTop:6, height:32, border:'1px solid var(--primary)', borderRadius:'var(--radius)', fontSize:'0.82rem', background:'white', color:'var(--text)', padding:'0 8px', boxSizing:'border-box' }} />
+                  )}
+                </div>
+                <div style={{ display:'flex', gap:6 }}>
+                  <button className="btn btn-sm" style={{ background:'#7C3AED', color:'white', gap:4, display:'flex', alignItems:'center' }}
+                    onClick={() => handleBulkApply('change_head')}>
+                    <Edit3 size={11}/> Update Head Only
+                  </button>
+                  <button className="btn btn-sm" style={{ background:'var(--success)', color:'white', gap:4, display:'flex', alignItems:'center' }}
+                    onClick={() => handleBulkApply('match_with_head')}>
+                    <CheckCircle size={11}/> Match + Set Head
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setShowBulkPanel(false)}>Cancel</button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div style={{ flex:1, overflowY:'auto', maxHeight:600 }}>
             {filtered.length === 0 ? (
