@@ -577,7 +577,7 @@ function SmartDocUpload({ onExtracted }) {
 
         {parsed && fieldCount === 0 && (
           <div style={{ fontSize:12, color:'#DC2626', display:'flex', alignItems:'center', gap:5 }}>
-            <AlertTriangle size:13 /> No fields could be extracted from this document.
+            <AlertTriangle size={13} /> No fields could be extracted from this document.
           </div>
         )}
       </div>
