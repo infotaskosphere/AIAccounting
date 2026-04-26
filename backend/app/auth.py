@@ -1,40 +1,43 @@
 """
-app/auth.py
------------
-JWT authentication + Role-Based Access Control.
-Roles: owner > manager > accountant > viewer
+Auth Module — JWT + bcrypt
 """
 from __future__ import annotations
-
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import bcrypt
-from fastapi import Depends, HTTPException, Header
-from jose import JWTError, jwt
+import jwt
+import asyncpg
 
-SECRET_KEY  = os.getenv("SECRET_KEY", "change-me-in-production")
-ALGORITHM   = "HS256"
-TOKEN_EXPIRE_HOURS = 24
+SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production-please")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))
 
-ROLE_HIERARCHY = {"owner": 4, "manager": 3, "accountant": 2, "viewer": 1}
+bearer_scheme = HTTPBearer()
 
+
+# ─── Password ─────────────────────────────────────────────────────────────────
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
-def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
+def verify_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
-def create_token(user_id: str, company_id: str, role: str) -> str:
+# ─── JWT ──────────────────────────────────────────────────────────────────────
+
+def create_access_token(user_id: int, company_id: int, role: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
-        "sub":        user_id,
+        "sub": str(user_id),
         "company_id": company_id,
-        "role":       role,
-        "exp":        datetime.utcnow() + timedelta(hours=TOKEN_EXPIRE_HOURS),
+        "role": role,
+        "exp": expire,
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -42,36 +45,51 @@ def create_token(user_id: str, company_id: str, role: str) -> str:
 def decode_token(token: str) -> dict:
     try:
         return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError as exc:
-        raise HTTPException(401, f"Invalid or expired token: {exc}")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 
-# ── FastAPI Dependencies ───────────────────────────────────────────────────────
+# ─── FastAPI deps ─────────────────────────────────────────────────────────────
 
-async def get_current_user(authorization: str = Header(default="")) -> dict:
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-    return decode_token(authorization.split(" ", 1)[1])
+class CurrentUser:
+    def __init__(self, user_id: int, company_id: int, role: str, name: str, email: str):
+        self.user_id = user_id
+        self.company_id = company_id
+        self.role = role
+        self.name = name
+        self.email = email
 
 
-async def require_role(min_role: str = "viewer"):
-    """Factory: returns a dependency that enforces minimum role level."""
-    async def _check(user: dict = Depends(get_current_user)) -> dict:
-        user_level = ROLE_HIERARCHY.get(user.get("role", "viewer"), 0)
-        min_level  = ROLE_HIERARCHY.get(min_role, 0)
-        if user_level < min_level:
-            raise HTTPException(403, f"Requires role '{min_role}' or higher")
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db=None,   # injected by main.py via Depends(get_db)
+) -> CurrentUser:
+    payload = decode_token(credentials.credentials)
+    user_id = int(payload["sub"])
+    company_id = payload["company_id"]
+    role = payload["role"]
+
+    # lightweight — trust JWT (no DB hit per request)
+    return CurrentUser(
+        user_id=user_id,
+        company_id=company_id,
+        role=role,
+        name=payload.get("name", ""),
+        email=payload.get("email", ""),
+    )
+
+
+def require_role(*roles: str):
+    """Dependency factory: require one of the given roles."""
+    async def checker(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+        if user.role not in roles:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
-    return _check
+    return checker
 
 
-async def get_company_id(user: dict = Depends(get_current_user)) -> str:
-    cid = user.get("company_id")
-    if not cid:
-        raise HTTPException(400, "No company in token")
-    return cid
-
-
-def require_owner():  return require_role("owner")
-def require_manager(): return require_role("manager")
-def require_accountant(): return require_role("accountant")
+# Convenience aliases
+require_admin = require_role("admin")
+require_accountant = require_role("admin", "accountant")
