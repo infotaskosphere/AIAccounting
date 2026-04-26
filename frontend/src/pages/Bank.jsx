@@ -15,7 +15,7 @@ import {
   Pencil, Settings, BookOpen, Building2, BookMarked, Send, Table2
 } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { loadCompanyData, addBankTransactions, updateBankTransaction, clearBankTransactions,
+import { loadCompanyData, saveCompanyData, addBankTransactions, updateBankTransaction, clearBankTransactions,
   loadCustomHeads, addCustomHead, renameCustomHead, deleteCustomHead, addVoucher, addVouchers } from '../api/companyStore'
 import { useAuth } from '../context/AuthContext'
 import { fmt, fmtDate } from '../utils/format'
@@ -817,8 +817,7 @@ export default function Bank() {
     const existing = data.bankAccounts || []
     const newAcc = { ...acc, id: `ba-${Date.now()}`, addedAt: new Date().toISOString() }
     data.bankAccounts = [...existing, newAcc]
-    const { saveCompanyData } = require?.('../api/companyStore') || {}
-    localStorage.setItem(`finix_data_${activeCompany?.id}`, JSON.stringify(data))
+    saveCompanyData(activeCompany?.id, data)
     loadTxns()
     toast.success(`Bank account "${acc.name}" added ✓`)
     setNewAccForm({ name:'', bankName:'', accountNo:'', ifsc:'', type:'current' })
@@ -1715,7 +1714,7 @@ export default function Bank() {
                       <button onClick={() => {
                         const data2 = loadCompanyData(activeCompany?.id)
                         data2.bankAccounts = (data2.bankAccounts || []).filter(a => a.id !== acc.id)
-                        localStorage.setItem(`finix_data_${activeCompany?.id}`, JSON.stringify(data2))
+                        saveCompanyData(activeCompany?.id, data2)
                         loadTxns()
                         toast.success('Account removed')
                       }} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--danger)', padding:4 }}>
