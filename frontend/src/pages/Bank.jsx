@@ -4,7 +4,7 @@
 // PDF.js (loaded from CDN) extracts text from the browser.
 // SBI/HDFC/ICICI/Axis/Kotak PDF + CSV + Excel all parsed in JavaScript.
 // ═══════════════════════════════════════════════════════════════════════
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { useSearchParams } from 'react-router-dom'
 import {
@@ -12,7 +12,7 @@ import {
   CreditCard, Brain, Download, Search,
   Filter, Edit3, Trash2, ArrowUpCircle, ArrowDownCircle, AlertCircle,
   Plus, Eye, Users, Hash, CreditCard as CardIcon, ChevronRight,
-  Pencil, Settings, BookOpen, Building2, BookMarked, Send, Table2
+  Pencil, Settings, BookOpen, Building2, BookMarked, Send, Table2, FileScan
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { loadCompanyData, saveCompanyData, addBankTransactions, updateBankTransaction, clearBankTransactions,
@@ -529,6 +529,8 @@ export default function Bank() {
   // ── NEW: Bank Accounts modal
   const [showBankAccounts, setShowBankAccounts] = useState(false)
   const [newAccForm,       setNewAccForm]       = useState({ name:'', bankName:'', accountNo:'', ifsc:'', type:'current' })
+  const [autoFillParsing, setAutoFillParsing] = useState(false)
+  const autoFillInputRef = useRef(null)
   // ── NEW: XLS Bulk Import
   const [showXLSImport,   setShowXLSImport]   = useState(false)
   const [xlsFile,         setXLSFile]         = useState(null)
@@ -836,6 +838,90 @@ export default function Bank() {
     if (sample.includes('INDUS')) bankName = 'IndusInd Bank'
     if (sample.includes('PNB'))   bankName = 'Punjab National Bank'
     return bankName
+  }
+
+  // ── Parse account header details from a bank statement PDF ───────
+  const parseAccountDetailsFromPDF = async (file) => {
+    setAutoFillParsing(true)
+    try {
+      const buf  = await file.arrayBuffer()
+      const text = await extractPDFText(new Uint8Array(buf))
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+      const full  = lines.join(' ')
+
+      const result = { name:'', bankName:'', accountNo:'', ifsc:'', type:'current' }
+
+      // ── Account Number ── 12-18 digit number that follows "Account Number"
+      const accNoMatch = full.match(/account\s*number\s*[:\-]?\s*(\d{9,18})/i)
+      if (accNoMatch) result.accountNo = accNoMatch[1]
+
+      // ── IFSC ── standard 11-char IFSC format
+      const ifscMatch = full.match(/\b(IFS\s*(?:C(?:ode)?)?|IFC|IFSC)[:\s]*([A-Z]{4}0[A-Z0-9]{6})\b/i)
+                     || full.match(/\b([A-Z]{4}0[A-Z0-9]{6})\b/)
+      if (ifscMatch) result.ifsc = (ifscMatch[2] || ifscMatch[1]).replace(/\s/g,'').toUpperCase()
+
+      // ── Account Type ── look for keywords near "Account Type"
+      const accTypeMatch = full.match(/account\s*type\s*[:\-]?\s*(current|savings|cash\s*credit|overdraft|od|cc|sb|ca)/i)
+      if (accTypeMatch) {
+        const t = accTypeMatch[1].toLowerCase()
+        if (t.includes('current') || t === 'ca') result.type = 'current'
+        else if (t.includes('saving') || t === 'sb') result.type = 'savings'
+        else if (t.includes('overdraft') || t === 'od') result.type = 'od'
+        else if (t.includes('cash') || t === 'cc') result.type = 'cc'
+      }
+
+      // ── Bank Name ── from IFSC prefix or header keywords
+      const ifscPrefix = result.ifsc?.slice(0,4).toUpperCase()
+      const BANK_IFSC = {
+        SBIN:'State Bank of India', HDFC:'HDFC Bank', ICIC:'ICICI Bank',
+        UTIB:'Axis Bank', KKBK:'Kotak Mahindra Bank', YESB:'Yes Bank',
+        BARB:'Bank of Baroda', PUNB:'Punjab National Bank', CNRB:'Canara Bank',
+        UBIN:'Union Bank of India', IDFB:'IDFC First Bank', INDB:'IndusInd Bank',
+        UCBA:'UCO Bank', BKID:'Bank of India', MAHB:'Bank of Maharashtra',
+      }
+      if (ifscPrefix && BANK_IFSC[ifscPrefix]) result.bankName = BANK_IFSC[ifscPrefix]
+      else {
+        // Fallback: scan header text
+        if (/state bank/i.test(full))   result.bankName = 'State Bank of India'
+        else if (/hdfc/i.test(full))    result.bankName = 'HDFC Bank'
+        else if (/icici/i.test(full))   result.bankName = 'ICICI Bank'
+        else if (/axis\s*bank/i.test(full))  result.bankName = 'Axis Bank'
+        else if (/kotak/i.test(full))   result.bankName = 'Kotak Mahindra Bank'
+        else if (/yes\s*bank/i.test(full))   result.bankName = 'Yes Bank'
+        else if (/punjab\s*national/i.test(full)) result.bankName = 'Punjab National Bank'
+        else if (/bank of baroda/i.test(full))    result.bankName = 'Bank of Baroda'
+        else if (/canara/i.test(full))  result.bankName = 'Canara Bank'
+        else if (/idfc/i.test(full))    result.bankName = 'IDFC First Bank'
+        else if (/indusind/i.test(full)) result.bankName = 'IndusInd Bank'
+      }
+
+      // ── Account Name (label) ── "Account Name" line or company name
+      const accNameMatch = full.match(/account\s*name\s*[:\-]?\s*([A-Z][A-Za-z0-9 &.,'\-]{3,60}?)(?:\s{2,}|Address|Branch|Date|Account)/i)
+      if (accNameMatch) {
+        result.name = accNameMatch[1].trim()
+      } else {
+        // Derive a short label from bank + type
+        result.name = result.bankName
+          ? `${result.bankName.split(' ')[0]} ${result.type === 'savings' ? 'Savings' : 'Current'}`
+          : 'Main Account'
+      }
+
+      // ── Branch name from MICR / Branch field ──
+      const branchMatch = full.match(/branch\s*[:\-]?\s*([A-Z][A-Za-z0-9 ()]{3,40})(?:\s{2,}|\()/i)
+      // (branch is informational only, not stored in form)
+
+      const filled = [result.accountNo, result.ifsc, result.bankName].filter(Boolean).length
+      if (filled === 0) {
+        toast.error('Could not extract account details. Ensure this is a text-based bank statement PDF.')
+      } else {
+        toast.success(`Auto-filled ${filled + (result.name ? 1 : 0)} fields from statement ✓`)
+        setNewAccForm(result)
+      }
+    } catch (err) {
+      toast.error('Failed to read PDF: ' + err.message)
+    } finally {
+      setAutoFillParsing(false)
+    }
   }
 
   // ── NEW: Post matched transactions to Journal ─────────────────────
@@ -1660,14 +1746,40 @@ export default function Bank() {
 
             {/* Add account form */}
             <div style={{ padding:'16px 22px', borderBottom:'1px solid var(--border)', background:'var(--surface-2)' }}>
-              <div style={{ fontSize:'0.75rem', fontWeight:700, color:'var(--text-3)', marginBottom:10, textTransform:'uppercase', letterSpacing:'0.05em' }}>Add Bank Account Manually</div>
+              {/* Header row with auto-fill button */}
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+                <div style={{ fontSize:'0.75rem', fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.05em' }}>Add Bank Account Manually</div>
+                <button
+                  onClick={() => autoFillInputRef.current?.click()}
+                  disabled={autoFillParsing}
+                  style={{ display:'flex', alignItems:'center', gap:6, fontSize:'0.75rem', fontWeight:600,
+                    padding:'5px 12px', borderRadius:6, border:'1.5px dashed #93C5FD',
+                    background:'linear-gradient(135deg,#EFF6FF,#F5F3FF)', color:'#2563EB',
+                    cursor: autoFillParsing ? 'not-allowed' : 'pointer', opacity: autoFillParsing ? 0.7 : 1,
+                    whiteSpace:'nowrap' }}>
+                  {autoFillParsing
+                    ? <><span style={{ width:11,height:11,border:'2px solid rgba(37,99,235,0.3)',borderTopColor:'#2563EB',borderRadius:'50%',display:'inline-block',animation:'spin .7s linear infinite' }}/> Reading PDF…</>
+                    : <><FileScan size={13}/> Auto-fill from Statement PDF</>
+                  }
+                </button>
+                <input
+                  ref={autoFillInputRef}
+                  type="file"
+                  accept=".pdf"
+                  style={{ display:'none' }}
+                  onChange={e => { const f = e.target.files?.[0]; if (f) { parseAccountDetailsFromPDF(f); e.target.value='' } }}
+                />
+              </div>
+
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8, marginBottom:8 }}>
                 <input value={newAccForm.name} onChange={e => setNewAccForm(f => ({...f, name:e.target.value}))}
                   placeholder="Account Label (e.g. Main Current)"
-                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)' }} />
+                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)',
+                    ...(newAccForm.name ? { borderColor:'#22C55E', background:'#F0FDF4' } : {}) }} />
                 <input value={newAccForm.bankName} onChange={e => setNewAccForm(f => ({...f, bankName:e.target.value}))}
                   placeholder="Bank Name (e.g. HDFC Bank)"
-                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)' }} />
+                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)',
+                    ...(newAccForm.bankName ? { borderColor:'#22C55E', background:'#F0FDF4' } : {}) }} />
                 <select value={newAccForm.type} onChange={e => setNewAccForm(f => ({...f, type:e.target.value}))}
                   style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 6px', background:'var(--bg)', color:'var(--text)' }}>
                   <option value="current">Current Account</option>
@@ -1679,10 +1791,12 @@ export default function Bank() {
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr auto', gap:8 }}>
                 <input value={newAccForm.accountNo} onChange={e => setNewAccForm(f => ({...f, accountNo:e.target.value}))}
                   placeholder="Account Number"
-                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)' }} />
+                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)',
+                    ...(newAccForm.accountNo ? { borderColor:'#22C55E', background:'#F0FDF4' } : {}) }} />
                 <input value={newAccForm.ifsc} onChange={e => setNewAccForm(f => ({...f, ifsc:e.target.value}))}
                   placeholder="IFSC Code"
-                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)' }} />
+                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)',
+                    ...(newAccForm.ifsc ? { borderColor:'#22C55E', background:'#F0FDF4' } : {}) }} />
                 <button className="btn btn-primary btn-sm" style={{ gap:5, display:'flex', alignItems:'center', padding:'0 16px' }}
                   onClick={() => { if (!newAccForm.name || !newAccForm.bankName) { toast.error('Name and bank name required'); return } saveBankAccount(newAccForm) }}>
                   <Plus size={13}/> Add
