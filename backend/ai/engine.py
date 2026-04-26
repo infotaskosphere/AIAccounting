@@ -217,10 +217,13 @@ class BankStatementParser:
                     txns = self._parse_table(table)
                     transactions.extend(txns)
 
-                # If no table found, fall back to raw text parsing
-                if not tables:
+                # If no table found or table yielded nothing, try text-based parsers
+                if not tables or not transactions:
                     text = page.extract_text() or ""
-                    txns = self._parse_text_lines(text.split("\n"))
+                    # Try SBI-specific text parser first
+                    txns = self._parse_sbi_text(text)
+                    if not txns:
+                        txns = self._parse_text_lines(text.split("\n"))
                     transactions.extend(txns)
 
         # Deduplicate by (date, amount, narration)
@@ -234,6 +237,94 @@ class BankStatementParser:
 
         return unique
 
+    def _parse_sbi_text(self, text: str) -> list[ParsedTransaction]:
+        """
+        SBI-specific text parser. SBI PDFs have multi-line narrations:
+          Txn Date | Value Date | Description | Ref No./Cheque No. | Branch Code | Debit | Credit | Balance
+        Each row in raw text spans 3-6 lines.
+        """
+        transactions: list[ParsedTransaction] = []
+        lines = [l.rstrip() for l in text.split("\n") if l.strip()]
+
+        # SBI rows start with two dates like "4 Apr 2025 4 Apr 2025"
+        DATE_RE = re.compile(r"^(\d{1,2}\s+\w{3}\s+\d{4})\s+(\d{1,2}\s+\w{3}\s+\d{4})")
+        AMT_RE  = re.compile(r"([\d,]+\.\d{2})")
+
+        i = 0
+        while i < len(lines):
+            m = DATE_RE.match(lines[i])
+            if not m:
+                i += 1
+                continue
+
+            txn_date_raw = m.group(1)
+            txn_date     = self._parse_date(txn_date_raw)
+            if not txn_date:
+                i += 1
+                continue
+
+            # Collect all text until the next date-line (max 8 lines)
+            block = [lines[i]]
+            j = i + 1
+            while j < len(lines) and j < i + 8 and not DATE_RE.match(lines[j]):
+                block.append(lines[j])
+                j += 1
+
+            block_text = " ".join(block)
+
+            # Extract all numbers that look like currency amounts
+            amounts = []
+            for a in AMT_RE.findall(block_text):
+                try:
+                    amounts.append(float(a.replace(",", "")))
+                except ValueError:
+                    pass
+
+            if len(amounts) < 2:
+                i = j
+                continue
+
+            # Last amount is balance, second-to-last is the transaction amount
+            balance    = amounts[-1]
+            txn_amount = amounts[-2]
+
+            if txn_amount == 0:
+                i = j
+                continue
+
+            # Determine credit/debit from narration keywords
+            bu = block_text.upper()
+            if "BY DEBIT CARD" in bu or "OTHPG" in bu or "ATM WDL" in bu:
+                txn_type = "debit"
+            elif any(kw in bu for kw in [
+                "BY TRANSFER", "BY CLEARING", "UPI/CR", "BULK POSTING",
+                "CASH CREDIT", "CHEQUE DEPOSIT", "CREDIT",
+            ]):
+                txn_type = "credit"
+            elif any(kw in bu for kw in [
+                "TO TRANSFER", "TO CLEARING", "IMPS/", "TRANSFER TO",
+                "OUT-CHQ", "CASH CHEQUE", "DEBIT",
+            ]):
+                txn_type = "debit"
+            else:
+                txn_type = "credit" if len(amounts) >= 3 and amounts[-1] > amounts[-3] else "debit"
+
+            # Build narration: strip dates and amounts from block text
+            narration_part = re.sub(r"\d{1,2}\s+\w{3}\s+\d{4}", "", block_text)
+            narration_part = AMT_RE.sub("", narration_part)
+            narration_part = re.sub(r"\s+", " ", narration_part).strip()
+            narration      = self._clean_narration(narration_part or "Bank Transaction")
+
+            transactions.append(ParsedTransaction(
+                txn_date  = txn_date,
+                narration = narration,
+                amount    = txn_amount,
+                txn_type  = txn_type,
+                balance   = balance,
+            ))
+            i = j
+
+        return transactions
     def _parse_table(self, table: list[list]) -> list[ParsedTransaction]:
         """Parse a pdfplumber table (list of rows) into transactions."""
         if not table or len(table) < 2:
