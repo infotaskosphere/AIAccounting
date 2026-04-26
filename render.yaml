@@ -16,7 +16,12 @@ services:
       - type: rewrite
         source: /api/*
         destination: https://aiaccounting-api.onrender.com/api/*
-      # ← THIS IS THE SPA FIX: every other URL serves index.html
+      # Serve built JS/CSS/image assets directly (do NOT rewrite to index.html)
+      # Without this, Vite-hashed filenames like /assets/index-Cw1_Jr6V.js get 404
+      - type: rewrite
+        source: /assets/*
+        destination: /assets/:splat
+      # SPA fallback: every other URL serves index.html (enables React Router)
       # Without this, hard refresh on /bank or /reports gives "Not Found"
       - type: rewrite
         source: /*
