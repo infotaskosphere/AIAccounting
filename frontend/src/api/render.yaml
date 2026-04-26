@@ -1,9 +1,28 @@
-## render.yaml — PUT THIS FILE AT THE ROOT OF YOUR REPO (not inside frontend/)
-## This fixes: /reports "Not Found", /bank "Not Found", all page refreshes breaking
+## render.yaml
+## ⚠️  THIS FILE MUST BE AT THE ROOT OF YOUR REPO (same level as frontend/ and backend/ folders)
+## NOT inside frontend/ — Render only reads render.yaml from the repo root.
 
 services:
 
-  # ── Backend (FastAPI) ──────────────────────────────────────────────────────
+  # ── Frontend (React SPA) ──────────────────────────────────────────────────
+  - type: web
+    name: aiaccounting-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    routes:
+      # All /api/* requests → backend service
+      - type: rewrite
+        source: /api/*
+        destination: https://aiaccounting-api.onrender.com/api/*
+      # ← THIS IS THE SPA FIX: every other URL serves index.html
+      # Without this, hard refresh on /bank or /reports gives "Not Found"
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+  # ── Backend (FastAPI) ─────────────────────────────────────────────────────
   - type: web
     name: aiaccounting-api
     runtime: python
@@ -19,29 +38,7 @@ services:
           property: connectionString
       - key: ENVIRONMENT
         value: production
-      - key: FRONTEND_URL
-        fromService:
-          name: aiaccounting-frontend
-          type: web
-          property: host
     healthCheckPath: /health
-
-  # ── Frontend (React/Vite static site) ─────────────────────────────────────
-  - type: web
-    name: aiaccounting-frontend
-    runtime: static
-    rootDir: frontend
-    buildCommand: npm install && npm run build
-    staticPublishPath: dist
-    routes:
-      # Proxy all /api/* requests to the backend service
-      - type: rewrite
-        source: /api/*
-        destination: https://aiaccounting-api.onrender.com/api/*
-      # SPA fallback — serve index.html for ALL routes (fixes /reports, /bank etc.)
-      - type: rewrite
-        source: /*
-        destination: /index.html
 
 databases:
   - name: aiaccounting-db
