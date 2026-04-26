@@ -12,11 +12,11 @@ import {
   CreditCard, Brain, Download, Search,
   Filter, Edit3, Trash2, ArrowUpCircle, ArrowDownCircle, AlertCircle,
   Plus, Eye, Users, Hash, CreditCard as CardIcon, ChevronRight,
-  Pencil, Settings, BookOpen
+  Pencil, Settings, BookOpen, Building2, BookMarked, Send, Table2
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { loadCompanyData, addBankTransactions, updateBankTransaction, clearBankTransactions,
-  loadCustomHeads, addCustomHead, renameCustomHead, deleteCustomHead } from '../api/companyStore'
+  loadCustomHeads, addCustomHead, renameCustomHead, deleteCustomHead, addVoucher, addVouchers } from '../api/companyStore'
 import { useAuth } from '../context/AuthContext'
 import { fmt, fmtDate } from '../utils/format'
 
@@ -489,6 +489,7 @@ export default function Bank() {
   const tab = searchParams.get('tab') || 'accounts'
 
   const [transactions, setTransactions] = useState([])
+  const [bankAccounts,   setBankAccounts]   = useState([])   // NEW: bank accounts registry
   const [filter,       setFilter]       = useState('all')
   const [searchQuery,  setSearchQuery]  = useState('')
   const [loading,      setLoading]      = useState(false)
@@ -504,7 +505,7 @@ export default function Bank() {
   // ── Custom heads
   const [customHeads,  setCustomHeads]  = useState([])
   const [showManageHeads, setShowManageHeads] = useState(false)
-  const [editingHead,  setEditingHead]  = useState(null)   // { original, value }
+  const [editingHead,  setEditingHead]  = useState(null)
   const [newHeadInput, setNewHeadInput] = useState('')
   const [sortBy,       setSortBy]       = useState('date_desc')
   const [showFilters,  setShowFilters]  = useState(false)
@@ -520,11 +521,26 @@ export default function Bank() {
   const [bulkCustom,     setBulkCustom]     = useState('')
   const [showBulkCustom, setShowBulkCustom] = useState(false)
   const [showBulkPanel,  setShowBulkPanel]  = useState(false)
+  // ── NEW: Post to Journal modal
+  const [showPostJournal, setShowPostJournal] = useState(false)
+  const [postingTxns,     setPostingTxns]     = useState([])
+  const [postProgress,    setPostProgress]    = useState(0)
+  const [postDone,        setPostDone]        = useState(false)
+  // ── NEW: Bank Accounts modal
+  const [showBankAccounts, setShowBankAccounts] = useState(false)
+  const [newAccForm,       setNewAccForm]       = useState({ name:'', bankName:'', accountNo:'', ifsc:'', type:'current' })
+  // ── NEW: XLS Bulk Import
+  const [showXLSImport,   setShowXLSImport]   = useState(false)
+  const [xlsFile,         setXLSFile]         = useState(null)
+  const [xlsType,         setXLSType]         = useState('sales')
+  const [xlsPreview,      setXLSPreview]      = useState(null)
+  const [xlsImporting,    setXLSImporting]    = useState(false)
 
   const loadTxns = () => {
     const data = loadCompanyData(activeCompany?.id)
     setTransactions(data.bankTransactions || [])
     setCustomHeads(loadCustomHeads(activeCompany?.id))
+    setBankAccounts(data.bankAccounts || [])
   }
 
   useEffect(() => { loadTxns() }, [activeCompany?.id])
@@ -614,6 +630,32 @@ export default function Bank() {
       let msg = `✅ ${newTxns.length} transactions imported from ${uploadedFile.name}`
       if (dupes > 0) msg += ` (${dupes} duplicates skipped)`
       toast.success(msg)
+
+      // Auto-detect & suggest bank account
+      if (newTxns.length > 0) {
+        const detectedBank = detectBankFromStatement(newTxns)
+        const data2 = loadCompanyData(activeCompany?.id)
+        const existingAccts = data2.bankAccounts || []
+        const alreadyExists = existingAccts.some(a => a.bankName === detectedBank)
+        if (!alreadyExists) {
+          toast((t2) => (
+            <div style={{ fontSize: 13 }}>
+              <strong>Detected: {detectedBank}</strong><br/>
+              <span style={{ fontSize: 11, color: '#666' }}>Save as bank account?</span><br/>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button onClick={() => { saveBankAccount({ name: detectedBank, bankName: detectedBank, accountNo: '', ifsc: '', type: 'current' }); toast.dismiss(t2.id) }}
+                  style={{ background: '#4F46E5', color: 'white', border: 'none', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}>
+                  Add Account
+                </button>
+                <button onClick={() => toast.dismiss(t2.id)}
+                  style={{ background: '#E5E7EB', border: 'none', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}>
+                  Skip
+                </button>
+              </div>
+            </div>
+          ), { duration: 8000 })
+        }
+      }
       setUploadedFile(null)
 
     } catch (err) {
@@ -769,6 +811,171 @@ export default function Bank() {
     toast.success('Exported to CSV')
   }
 
+  // ── NEW: Save bank account ────────────────────────────────────────
+  const saveBankAccount = (acc) => {
+    const data = loadCompanyData(activeCompany?.id)
+    const existing = data.bankAccounts || []
+    const newAcc = { ...acc, id: `ba-${Date.now()}`, addedAt: new Date().toISOString() }
+    data.bankAccounts = [...existing, newAcc]
+    const { saveCompanyData } = require?.('../api/companyStore') || {}
+    localStorage.setItem(`finix_data_${activeCompany?.id}`, JSON.stringify(data))
+    loadTxns()
+    toast.success(`Bank account "${acc.name}" added ✓`)
+    setNewAccForm({ name:'', bankName:'', accountNo:'', ifsc:'', type:'current' })
+  }
+
+  const detectBankFromStatement = (txns) => {
+    // Auto-detect bank name from narration patterns
+    const sample = txns.slice(0, 10).map(t => t.narration.toUpperCase()).join(' ')
+    let bankName = 'Unknown Bank'
+    if (sample.includes('SBI') || sample.includes('STATE BANK'))   bankName = 'State Bank of India'
+    if (sample.includes('HDFC'))  bankName = 'HDFC Bank'
+    if (sample.includes('ICICI')) bankName = 'ICICI Bank'
+    if (sample.includes('AXIS'))  bankName = 'Axis Bank'
+    if (sample.includes('KOTAK')) bankName = 'Kotak Mahindra Bank'
+    if (sample.includes('YES'))   bankName = 'Yes Bank'
+    if (sample.includes('INDUS')) bankName = 'IndusInd Bank'
+    if (sample.includes('PNB'))   bankName = 'Punjab National Bank'
+    return bankName
+  }
+
+  // ── NEW: Post matched transactions to Journal ─────────────────────
+  const handlePostToJournal = async () => {
+    const matched = transactions.filter(t => (t.status === 'matched' || t.status === 'manually_matched') && !t.journal_posted)
+    if (matched.length === 0) { toast.error('No matched transactions to post. Match transactions first.'); return }
+    setPostingTxns(matched)
+    setPostDone(false)
+    setPostProgress(0)
+    setShowPostJournal(true)
+  }
+
+  const confirmPostToJournal = async () => {
+    setXLSImporting(true)
+    let posted = 0
+    for (let i = 0; i < postingTxns.length; i++) {
+      const t = postingTxns[i]
+      const isCredit = t.txn_type === 'credit'
+      addVoucher(activeCompany?.id, {
+        voucher_type: isCredit ? 'receipt' : 'payment',
+        date:         t.txn_date,
+        reference:    t.reference || '',
+        party:        '',
+        narration:    t.narration.substring(0, 200),
+        amount:       t.amount,
+        cgst:         0, sgst: 0, igst: 0,
+        source:       'bank_import',
+        debit_account:  isCredit ? 'Bank Account' : (t.ai_suggested_account || 'Miscellaneous Expense'),
+        credit_account: isCredit ? (t.ai_suggested_account || 'Miscellaneous Income') : 'Bank Account',
+        bank_txn_id:  t.id,
+      })
+      // Mark as journal_posted
+      updateBankTransaction(activeCompany?.id, t.id, { journal_posted: true })
+      posted++
+      setPostProgress(Math.round((i + 1) / postingTxns.length * 100))
+      await new Promise(r => setTimeout(r, 30))
+    }
+    loadTxns()
+    setPostDone(true)
+    setXLSImporting(false)
+    toast.success(`${posted} journal entries created ✓`)
+  }
+
+  // ── NEW: XLS Bulk Import (Sales/Purchase) ─────────────────────────
+  const handleXLSFile = async (file) => {
+    if (!file) return
+    setXLSFile(file)
+    setXLSPreview(null)
+    try {
+      if (!window.XLSX) {
+        await new Promise((res, rej) => {
+          const s = document.createElement('script')
+          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'
+          s.onload = res; s.onerror = rej
+          document.head.appendChild(s)
+        })
+      }
+      const buf = await file.arrayBuffer()
+      const wb  = window.XLSX.read(new Uint8Array(buf), { type: 'array' })
+      const ws  = wb.Sheets[wb.SheetNames[0]]
+      const rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+      // Find header row (look for Date column)
+      let headerIdx = -1
+      for (let i = 0; i < Math.min(10, rows.length); i++) {
+        const row = rows[i].map(c => String(c).toLowerCase())
+        if (row.some(c => c.includes('date')) && row.some(c => c.includes('party') || c.includes('invoice') || c.includes('amount'))) {
+          headerIdx = i; break
+        }
+      }
+
+      if (headerIdx === -1) {
+        toast.error('Could not detect header row. Expected columns: Date, Party Name, Invoice No, Amount.')
+        return
+      }
+
+      const headers = rows[headerIdx].map(c => String(c).toLowerCase().trim())
+      const findCol = (keys) => keys.reduce((f, k) => f !== -1 ? f : headers.findIndex(h => h.includes(k)), -1)
+
+      const cols = {
+        date:    findCol(['date']),
+        party:   findCol(['party name', 'party', 'customer', 'vendor', 'supplier']),
+        invoice: findCol(['invoice no', 'invoice', 'voucher']),
+        amount:  findCol(['total amount', 'amount']),
+        gst:     findCol(['gst', 'cgst', 'tax']),
+        status:  findCol(['payment status', 'status']),
+        type:    findCol(['transaction type', 'type']),
+      }
+
+      const dataRows = rows.slice(headerIdx + 1).filter(r => r.some(c => c !== ''))
+      const parsed = dataRows.map((r, idx) => ({
+        _idx: idx,
+        date:    String(r[cols.date] || '').trim(),
+        party:   String(r[cols.party] || '').trim(),
+        invoice: String(r[cols.invoice] || '').trim(),
+        amount:  parseFloat(String(r[cols.amount] || '0').replace(/[₹,]/g, '')) || 0,
+        status:  String(r[cols.status] || 'Unpaid').trim(),
+        type:    String(r[cols.type] || xlsType).trim(),
+      })).filter(r => r.date && r.amount > 0)
+
+      setXLSPreview({ headers: rows[headerIdx], rows: parsed, cols, total: parsed.reduce((s, r) => s + r.amount, 0) })
+      toast.success(`Found ${parsed.length} records in ${file.name}`)
+    } catch (err) {
+      toast.error('Could not parse file: ' + err.message)
+    }
+  }
+
+  const handleXLSImport = async () => {
+    if (!xlsPreview) return
+    setXLSImporting(true)
+    let count = 0
+    for (const row of xlsPreview.rows) {
+      const vType = xlsType === 'sales' ? 'sales' : xlsType === 'purchase' ? 'purchase' : 'journal'
+      // Parse date
+      let dateStr = row.date
+      const parsed = parseDate(dateStr)
+      if (parsed) dateStr = parsed
+
+      addVoucher(activeCompany?.id, {
+        voucher_type: vType,
+        date:         dateStr || new Date().toISOString().slice(0,10),
+        reference:    row.invoice,
+        party:        row.party,
+        narration:    `${vType.charAt(0).toUpperCase()+vType.slice(1)} - ${row.party} - ${row.invoice}`,
+        amount:       row.amount,
+        cgst:         0, sgst: 0, igst: 0,
+        source:       'xls_import',
+      })
+      count++
+      await new Promise(r => setTimeout(r, 10))
+    }
+    loadTxns()
+    setXLSImporting(false)
+    setXLSPreview(null)
+    setXLSFile(null)
+    setShowXLSImport(false)
+    toast.success(`✅ ${count} ${xlsType} vouchers imported from ${xlsFile?.name}`)
+  }
+
   const getFiltered = () => {
     let list = [...transactions]
     if (filter !== 'all') {
@@ -820,9 +1027,20 @@ export default function Bank() {
               <button className="btn btn-secondary" onClick={handleClearAll} style={{ color:'var(--danger)' }}><Trash2 size={15}/> Clear All</button>
             </>
           )}
+          <button className="btn btn-secondary" onClick={() => setShowXLSImport(true)} style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <Table2 size={15}/> Bulk XLS Import
+          </button>
+          <button className="btn btn-secondary" onClick={() => setShowBankAccounts(true)} style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <Building2 size={15}/> Bank Accounts {bankAccounts.length > 0 && <span style={{ background:'var(--primary)', color:'white', borderRadius:999, fontSize:'0.65rem', padding:'1px 6px' }}>{bankAccounts.length}</span>}
+          </button>
           <button className="btn btn-secondary" onClick={() => setShowManageHeads(true)} style={{ display:'flex', alignItems:'center', gap:6 }}>
             <BookOpen size={15}/> Account Heads {customHeads.length > 0 && <span style={{ background:'var(--primary)', color:'white', borderRadius:999, fontSize:'0.65rem', padding:'1px 6px' }}>{customHeads.length}</span>}
           </button>
+          {transactions.filter(t => (t.status==='matched'||t.status==='manually_matched') && !t.journal_posted).length > 0 && (
+            <button className="btn btn-secondary" onClick={handlePostToJournal} style={{ display:'flex', alignItems:'center', gap:6, color:'var(--success)', borderColor:'var(--success)' }}>
+              <BookMarked size={15}/> Post to Journal ({transactions.filter(t => (t.status==='matched'||t.status==='manually_matched') && !t.journal_posted).length})
+            </button>
+          )}
           <button className="btn btn-primary" onClick={handleAutoReconcile} disabled={loading || counts.all === 0}>
             {loading ? <><Spinner color="white"/> Processing…</> : <><Zap size={15}/> AI Auto-Reconcile</>}
           </button>
@@ -1423,6 +1641,288 @@ export default function Bank() {
           <button onClick={() => setSimilarApplied(null)} style={{ background:'rgba(255,255,255,0.2)', border:'none', cursor:'pointer', color:'white', borderRadius:6, padding:'2px 8px', fontSize:'0.78rem' }}>✕</button>
         </div>
       )}
+
+      {/* ── NEW: BANK ACCOUNTS MODAL ─────────────────────────────────── */}
+      {showBankAccounts && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
+          onClick={() => setShowBankAccounts(false)}>
+          <div style={{ background:'var(--surface)', borderRadius:16, width:'100%', maxWidth:600, boxShadow:'0 24px 80px rgba(0,0,0,0.22)', overflow:'hidden', maxHeight:'85vh', display:'flex', flexDirection:'column' }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ padding:'18px 22px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between', background:'linear-gradient(135deg,#EFF6FF,#EEF2FF)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                <Building2 size={20} color="var(--primary)" />
+                <div>
+                  <div style={{ fontWeight:700, fontSize:'1rem' }}>Bank Accounts</div>
+                  <div style={{ fontSize:'0.72rem', color:'var(--text-3)' }}>Manage linked bank accounts · Auto-detected from statements</div>
+                </div>
+              </div>
+              <button onClick={() => setShowBankAccounts(false)} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-3)' }}><X size={18}/></button>
+            </div>
+
+            {/* Add account form */}
+            <div style={{ padding:'16px 22px', borderBottom:'1px solid var(--border)', background:'var(--surface-2)' }}>
+              <div style={{ fontSize:'0.75rem', fontWeight:700, color:'var(--text-3)', marginBottom:10, textTransform:'uppercase', letterSpacing:'0.05em' }}>Add Bank Account Manually</div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8, marginBottom:8 }}>
+                <input value={newAccForm.name} onChange={e => setNewAccForm(f => ({...f, name:e.target.value}))}
+                  placeholder="Account Label (e.g. Main Current)"
+                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)' }} />
+                <input value={newAccForm.bankName} onChange={e => setNewAccForm(f => ({...f, bankName:e.target.value}))}
+                  placeholder="Bank Name (e.g. HDFC Bank)"
+                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)' }} />
+                <select value={newAccForm.type} onChange={e => setNewAccForm(f => ({...f, type:e.target.value}))}
+                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 6px', background:'var(--bg)', color:'var(--text)' }}>
+                  <option value="current">Current Account</option>
+                  <option value="savings">Savings Account</option>
+                  <option value="cc">Cash Credit</option>
+                  <option value="od">Overdraft</option>
+                </select>
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr auto', gap:8 }}>
+                <input value={newAccForm.accountNo} onChange={e => setNewAccForm(f => ({...f, accountNo:e.target.value}))}
+                  placeholder="Account Number"
+                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)' }} />
+                <input value={newAccForm.ifsc} onChange={e => setNewAccForm(f => ({...f, ifsc:e.target.value}))}
+                  placeholder="IFSC Code"
+                  style={{ height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.82rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)' }} />
+                <button className="btn btn-primary btn-sm" style={{ gap:5, display:'flex', alignItems:'center', padding:'0 16px' }}
+                  onClick={() => { if (!newAccForm.name || !newAccForm.bankName) { toast.error('Name and bank name required'); return } saveBankAccount(newAccForm) }}>
+                  <Plus size={13}/> Add
+                </button>
+              </div>
+            </div>
+
+            <div style={{ flex:1, overflowY:'auto', padding:'16px 22px' }}>
+              {bankAccounts.length === 0 ? (
+                <div style={{ textAlign:'center', padding:'32px 0', color:'var(--text-3)' }}>
+                  <Building2 size={36} style={{ margin:'0 auto 12px', opacity:0.3 }} />
+                  <div style={{ fontSize:13 }}>No bank accounts added yet</div>
+                  <div style={{ fontSize:12, marginTop:4 }}>Accounts are auto-detected when you import a bank statement, or add manually above.</div>
+                </div>
+              ) : (
+                <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                  {bankAccounts.map(acc => (
+                    <div key={acc.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 16px', background:'var(--surface-2)', borderRadius:10, border:'1px solid var(--border)' }}>
+                      <div style={{ width:40, height:40, borderRadius:10, background:'linear-gradient(135deg,#4F46E5,#7C3AED)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                        <Building2 size={18} color="white" />
+                      </div>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontWeight:700, fontSize:'0.9rem' }}>{acc.name}</div>
+                        <div style={{ fontSize:'0.75rem', color:'var(--text-3)' }}>{acc.bankName} · {acc.type?.toUpperCase()} {acc.accountNo ? `· ****${acc.accountNo.slice(-4)}` : ''} {acc.ifsc ? `· ${acc.ifsc}` : ''}</div>
+                      </div>
+                      <span style={{ fontSize:'0.7rem', padding:'3px 10px', background:'#EEF2FF', color:'var(--primary)', borderRadius:20, fontWeight:600 }}>
+                        {transactions.filter(t => (t.bankAccountId === acc.id || t.narration?.toUpperCase().includes(acc.bankName?.toUpperCase()?.slice(0,4) || ''))).length} txns
+                      </span>
+                      <button onClick={() => {
+                        const data2 = loadCompanyData(activeCompany?.id)
+                        data2.bankAccounts = (data2.bankAccounts || []).filter(a => a.id !== acc.id)
+                        localStorage.setItem(`finix_data_${activeCompany?.id}`, JSON.stringify(data2))
+                        loadTxns()
+                        toast.success('Account removed')
+                      }} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--danger)', padding:4 }}>
+                        <Trash2 size={14}/>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div style={{ padding:'12px 22px', borderTop:'1px solid var(--border)', display:'flex', justifyContent:'flex-end' }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => setShowBankAccounts(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── NEW: POST TO JOURNAL MODAL ────────────────────────────────── */}
+      {showPostJournal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
+          onClick={() => { if (!xlsImporting) setShowPostJournal(false) }}>
+          <div style={{ background:'var(--surface)', borderRadius:16, width:'100%', maxWidth:640, boxShadow:'0 24px 80px rgba(0,0,0,0.22)', overflow:'hidden', maxHeight:'85vh', display:'flex', flexDirection:'column' }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ padding:'18px 22px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between', background:'linear-gradient(135deg,#F0FDF4,#ECFDF5)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                <BookMarked size={20} color="var(--success)" />
+                <div>
+                  <div style={{ fontWeight:700, fontSize:'1rem' }}>Post Transactions to Journal</div>
+                  <div style={{ fontSize:'0.72rem', color:'var(--text-3)' }}>Create journal entries & ledger for {postingTxns.length} matched transactions</div>
+                </div>
+              </div>
+              {!xlsImporting && <button onClick={() => setShowPostJournal(false)} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-3)' }}><X size={18}/></button>}
+            </div>
+
+            {postDone ? (
+              <div style={{ padding:'48px 22px', textAlign:'center' }}>
+                <CheckCircle size={52} color="var(--success)" style={{ margin:'0 auto 16px' }} />
+                <div style={{ fontWeight:700, fontSize:'1.2rem', marginBottom:8 }}>Journal Entries Created!</div>
+                <div style={{ fontSize:'0.85rem', color:'var(--text-3)', marginBottom:24 }}>
+                  {postingTxns.length} vouchers posted to Journal. Ledger updated automatically.<br/>
+                  Debit/Credit entries created with AI-suggested account heads.
+                </div>
+                <button className="btn btn-primary" onClick={() => { setShowPostJournal(false); setPostDone(false) }}>Close</button>
+              </div>
+            ) : (
+              <>
+                {/* Summary */}
+                <div style={{ padding:'14px 22px', borderBottom:'1px solid var(--border)', background:'var(--surface-2)', display:'flex', gap:24 }}>
+                  <div><span style={{ fontSize:'0.75rem', color:'var(--text-3)' }}>Entries to Post</span><div style={{ fontWeight:700, fontSize:'1.1rem', color:'var(--text)' }}>{postingTxns.length}</div></div>
+                  <div><span style={{ fontSize:'0.75rem', color:'var(--text-3)' }}>Credits (Money In)</span><div style={{ fontWeight:700, fontSize:'1.1rem', color:'var(--success)' }}>₹{fmt(postingTxns.filter(t=>t.txn_type==='credit').reduce((s,t)=>s+t.amount,0))}</div></div>
+                  <div><span style={{ fontSize:'0.75rem', color:'var(--text-3)' }}>Debits (Money Out)</span><div style={{ fontWeight:700, fontSize:'1.1rem', color:'var(--danger)' }}>₹{fmt(postingTxns.filter(t=>t.txn_type==='debit').reduce((s,t)=>s+t.amount,0))}</div></div>
+                </div>
+
+                {/* AI ledger preview */}
+                <div style={{ flex:1, overflowY:'auto', maxHeight:340 }}>
+                  <div style={{ padding:'10px 22px 6px', fontSize:'0.72rem', fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.05em', borderBottom:'1px solid var(--border)', display:'grid', gridTemplateColumns:'80px 1fr 1fr 90px', gap:8 }}>
+                    <span>Date</span><span>Debit Account</span><span>Credit Account</span><span>Amount</span>
+                  </div>
+                  {postingTxns.slice(0, 20).map(t => (
+                    <div key={t.id} style={{ padding:'8px 22px', borderBottom:'1px solid var(--border)', display:'grid', gridTemplateColumns:'80px 1fr 1fr 90px', gap:8, fontSize:'0.8rem', alignItems:'center' }}>
+                      <span style={{ color:'var(--text-3)' }}>{fmtDate(t.txn_date)}</span>
+                      <span style={{ fontWeight:600, color:'var(--danger)' }}>{t.txn_type==='credit' ? 'Bank Account' : (t.ai_suggested_account||'Misc. Expense')}</span>
+                      <span style={{ fontWeight:600, color:'var(--success)' }}>{t.txn_type==='credit' ? (t.ai_suggested_account||'Misc. Income') : 'Bank Account'}</span>
+                      <span style={{ fontFamily:'var(--font-mono)', fontWeight:700 }}>₹{fmt(t.amount)}</span>
+                    </div>
+                  ))}
+                  {postingTxns.length > 20 && (
+                    <div style={{ padding:'10px 22px', fontSize:'0.78rem', color:'var(--text-3)', fontStyle:'italic' }}>…and {postingTxns.length - 20} more entries</div>
+                  )}
+                </div>
+
+                {xlsImporting && (
+                  <div style={{ padding:'12px 22px', borderTop:'1px solid var(--border)', background:'#F0FDF4' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8, fontSize:'0.82rem', color:'var(--success)', fontWeight:600 }}>
+                      <Spinner color="var(--success)" /> Posting journal entries… {postProgress}%
+                    </div>
+                    <div style={{ height:6, background:'var(--border)', borderRadius:99 }}>
+                      <div style={{ height:'100%', width:`${postProgress}%`, background:'var(--success)', borderRadius:99, transition:'width 0.3s ease' }} />
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ padding:'14px 22px', borderTop:'1px solid var(--border)', display:'flex', gap:8, justifyContent:'flex-end' }}>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setShowPostJournal(false)} disabled={xlsImporting}>Cancel</button>
+                  <button className="btn btn-primary" onClick={confirmPostToJournal} disabled={xlsImporting}
+                    style={{ background:'var(--success)', display:'flex', alignItems:'center', gap:7 }}>
+                    <Send size={14}/> Post {postingTxns.length} Journal Entries
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── NEW: XLS BULK IMPORT MODAL ────────────────────────────────── */}
+      {showXLSImport && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
+          onClick={() => { if (!xlsImporting) { setShowXLSImport(false); setXLSFile(null); setXLSPreview(null) } }}>
+          <div style={{ background:'var(--surface)', borderRadius:16, width:'100%', maxWidth:700, boxShadow:'0 24px 80px rgba(0,0,0,0.22)', overflow:'hidden', maxHeight:'88vh', display:'flex', flexDirection:'column' }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ padding:'18px 22px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between', background:'linear-gradient(135deg,#FFF7ED,#FFFBEB)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                <Table2 size={20} color="#D97706" />
+                <div>
+                  <div style={{ fontWeight:700, fontSize:'1rem' }}>Bulk XLS Import</div>
+                  <div style={{ fontSize:'0.72rem', color:'var(--text-3)' }}>Import Sales, Purchase, or any report from Excel / XLS files</div>
+                </div>
+              </div>
+              {!xlsImporting && <button onClick={() => { setShowXLSImport(false); setXLSFile(null); setXLSPreview(null) }}
+                style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-3)' }}><X size={18}/></button>}
+            </div>
+
+            {/* Type selector + upload */}
+            <div style={{ padding:'16px 22px', borderBottom:'1px solid var(--border)', background:'var(--surface-2)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12 }}>
+                <span style={{ fontSize:'0.82rem', fontWeight:600, color:'var(--text-2)' }}>Import as:</span>
+                {['sales','purchase','journal','receipt','payment'].map(t => (
+                  <button key={t} onClick={() => setXLSType(t)}
+                    className={xlsType===t ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm'}
+                    style={{ textTransform:'capitalize', padding:'4px 14px' }}>{t}</button>
+                ))}
+              </div>
+              <div
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => { e.preventDefault(); handleXLSFile(e.dataTransfer.files[0]) }}
+                onClick={() => { const inp = document.getElementById('xls-file-inp'); inp?.click() }}
+                style={{ border:'2px dashed var(--border)', borderRadius:10, padding:'20px 0', textAlign:'center', cursor:'pointer',
+                  background: xlsFile ? '#F0FDF4' : 'var(--bg)', transition:'all 0.2s',
+                  borderColor: xlsFile ? 'var(--success)' : 'var(--border)' }}>
+                <input id="xls-file-inp" type="file" accept=".xls,.xlsx,.csv" style={{ display:'none' }}
+                  onChange={e => handleXLSFile(e.target.files[0])} />
+                {xlsFile ? (
+                  <>
+                    <CheckCircle size={24} color="var(--success)" style={{ margin:'0 auto 8px' }} />
+                    <div style={{ fontWeight:600, color:'var(--success)', marginBottom:2 }}>{xlsFile.name}</div>
+                    <div style={{ fontSize:'0.75rem', color:'var(--text-3)' }}>Click to change file</div>
+                  </>
+                ) : (
+                  <>
+                    <Upload size={24} color="var(--text-3)" style={{ margin:'0 auto 8px' }} />
+                    <div style={{ fontWeight:600, color:'var(--text)', marginBottom:2 }}>Drag & drop or click to browse</div>
+                    <div style={{ fontSize:'0.75rem', color:'var(--text-3)' }}>Supports .xls · .xlsx · .csv · Max 20 MB</div>
+                    <div style={{ fontSize:'0.72rem', color:'var(--text-3)', marginTop:4 }}>Expected columns: Date · Party Name · Invoice No · Amount</div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Preview */}
+            {xlsPreview && (
+              <>
+                <div style={{ padding:'10px 22px 6px', background:'#FFFBEB', borderBottom:'1px solid #FDE68A', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+                  <div style={{ fontSize:'0.82rem', fontWeight:600, color:'#92400E' }}>
+                    Preview — {xlsPreview.rows.length} records found · Total: ₹{fmt(xlsPreview.total)}
+                  </div>
+                  <span style={{ fontSize:'0.75rem', color:'#92400E' }}>Showing first 10 of {xlsPreview.rows.length}</span>
+                </div>
+                <div style={{ flex:1, overflowY:'auto', maxHeight:260 }}>
+                  <div style={{ padding:'6px 22px', borderBottom:'1px solid var(--border)', display:'grid', gridTemplateColumns:'100px 1fr 100px 80px 80px', gap:8, fontSize:'0.72rem', fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.04em' }}>
+                    <span>Date</span><span>Party</span><span>Invoice</span><span>Amount</span><span>Status</span>
+                  </div>
+                  {xlsPreview.rows.slice(0, 10).map((row, i) => (
+                    <div key={i} style={{ padding:'8px 22px', borderBottom:'1px solid var(--border)', display:'grid', gridTemplateColumns:'100px 1fr 100px 80px 80px', gap:8, fontSize:'0.8rem', alignItems:'center' }}>
+                      <span style={{ color:'var(--text-3)' }}>{row.date}</span>
+                      <span style={{ fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{row.party || '—'}</span>
+                      <span style={{ color:'var(--primary)', fontSize:'0.75rem' }}>{row.invoice || '—'}</span>
+                      <span style={{ fontFamily:'var(--font-mono)', fontWeight:700 }}>₹{fmt(row.amount)}</span>
+                      <span style={{ fontSize:'0.7rem', padding:'2px 6px', borderRadius:10,
+                        background: row.status?.toLowerCase() === 'paid' ? '#ECFDF5' : row.status?.toLowerCase() === 'unpaid' ? '#FEF2F2' : '#F3F4F6',
+                        color: row.status?.toLowerCase() === 'paid' ? '#065F46' : row.status?.toLowerCase() === 'unpaid' ? '#991B1B' : '#374151' }}>
+                        {row.status || 'N/A'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {xlsImporting && (
+              <div style={{ padding:'12px 22px', background:'#FFFBEB', borderTop:'1px solid #FDE68A' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:'0.82rem', color:'#92400E', fontWeight:600, marginBottom:6 }}>
+                  <Spinner color="#D97706" /> Importing {xlsType} vouchers…
+                </div>
+                <div style={{ height:6, background:'var(--border)', borderRadius:99 }}>
+                  <div style={{ height:'100%', width:'60%', background:'#D97706', borderRadius:99, animation:'xls-prog 1.5s ease-in-out infinite alternate' }} />
+                </div>
+              </div>
+            )}
+
+            <div style={{ padding:'14px 22px', borderTop:'1px solid var(--border)', display:'flex', gap:8, justifyContent:'space-between', alignItems:'center' }}>
+              <div style={{ fontSize:'0.78rem', color:'var(--text-3)' }}>
+                {xlsPreview ? `${xlsPreview.rows.length} vouchers will be posted to ${xlsType} journal` : 'Upload a file to preview before importing'}
+              </div>
+              <div style={{ display:'flex', gap:8 }}>
+                <button className="btn btn-secondary btn-sm" disabled={xlsImporting} onClick={() => { setShowXLSImport(false); setXLSFile(null); setXLSPreview(null) }}>Cancel</button>
+                <button className="btn btn-primary" disabled={!xlsPreview || xlsImporting} onClick={handleXLSImport}
+                  style={{ background:'#D97706', display:'flex', alignItems:'center', gap:7 }}>
+                  <Upload size={14}/> Import {xlsPreview?.rows.length || ''} {xlsType} Vouchers
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } } @keyframes xls-prog { from { width:20% } to { width:80% } }`}</style>
     </div>
   )
 }
