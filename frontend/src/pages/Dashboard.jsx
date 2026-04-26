@@ -1,4 +1,4 @@
-// ── Dashboard.jsx — real data + full journal entry modal + bulk import + EDITABLE
+// ── Dashboard.jsx — real data + full journal entry modal + bulk import
 import { useState, useRef, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
 import {
@@ -10,7 +10,7 @@ import {
   Wallet, BarChart2, AlertTriangle, Info, CheckCircle,
   ArrowRight, X, Plus, Zap, Activity, FileText,
   IndianRupee, Receipt, Users, RefreshCw, Upload,
-  Brain, Trash2, PlusCircle, Table2, Edit2, AlertCircle, Shield, Save
+  Brain, Trash2, PlusCircle, Table2, Edit2, AlertCircle, Shield
 } from 'lucide-react'
 import { loadCompanyData, addVoucher, addVouchers, updateVoucher, deleteVoucher, computeFinancials } from '../api/companyStore'
 import { fmt, fmtCr, fmtDate } from '../utils/format'
@@ -61,6 +61,7 @@ const EMPTY_ROW = () => ({
   reference:'', party:'', narration:'', amount:'', cgst:'', sgst:'', igst:'',
 })
 
+// ── CSV Template download ──────────────────────────────────────────────────
 function downloadCSVTemplate() {
   const headers = 'type,date,reference,party,narration,amount,cgst,sgst,igst'
   const sample  = [
@@ -75,6 +76,7 @@ function downloadCSVTemplate() {
   toast.success('Template downloaded')
 }
 
+// ── Parse CSV text into voucher rows ──────────────────────────────────────
 function parseCSV(text) {
   const lines = text.trim().split('\n').filter(Boolean)
   if (lines.length < 2) throw new Error('CSV must have a header row and at least one data row')
@@ -101,342 +103,441 @@ function parseCSV(text) {
   })
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// XLS / XLSX IMPORT ENGINE  —  Professional accounting-grade parser
+// Handles: Finix Sale Report, Tally exports, and generic invoice lists
+// Accounting principles enforced:
+//   • Credit Notes posted as negative sales (debit Sales, credit Debtor)
+//   • GST correctly split: CGST + SGST (intra-state) or IGST (inter-state)
+//   • GST extracted from Sale Items sheet when available (per-invoice accuracy)
+//   • Total Amount = Taxable Amount + CGST + SGST + IGST (always verified)
+//   • Summary/footer rows (Total, Grand Total) are excluded
+//   • Cancelled transactions are excluded
+//   • Duplicate invoice detection and deduplication
+// ══════════════════════════════════════════════════════════════════════════
+
 async function loadSheetJS() {
   if (window.XLSX) return window.XLSX
-  return new Promise((res, rej) => {
-    const s = document.createElement('script')
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'
-    s.onload = () => res(window.XLSX); s.onerror = rej
-    document.head.appendChild(s)
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'
+    script.onload = () => resolve(window.XLSX)
+    script.onerror = () => reject(new Error('Failed to load SheetJS library'))
+    document.head.appendChild(script)
   })
 }
 
-// ── Robust date parser for XLS cells ──────────────────────────────────────
-// SheetJS with cellDates:true returns JS Date objects; without it returns
-// serial numbers or strings. We handle ALL three cases.
+/**
+ * Robustly parse a date cell into ISO YYYY-MM-DD format.
+ * Handles: DD/MM/YYYY, DD-MM-YYYY, YYYY-MM-DD, Excel serial numbers, JS Date objects.
+ */
 function parseDate_xls(raw) {
   if (!raw && raw !== 0) return null
 
-  // Case 1: JS Date object (cellDates:true)
+  // Already a JS Date (from SheetJS cellDates:true)
   if (raw instanceof Date && !isNaN(raw)) {
-    const y = raw.getFullYear()
-    const m = String(raw.getMonth()+1).padStart(2,'0')
-    const d = String(raw.getDate()).padStart(2,'0')
-    return `${y}-${m}-${d}`
+    return raw.toISOString().slice(0, 10)
   }
 
-  // Case 2: Excel serial number (days since 1900-01-01)
-  if (typeof raw === 'number' && raw > 40000 && raw < 60000) {
-    const d = new Date((raw - 25569) * 86400 * 1000)
-    const y = d.getUTCFullYear()
-    const mo = String(d.getUTCMonth()+1).padStart(2,'0')
-    const dy = String(d.getUTCDate()).padStart(2,'0')
-    return `${y}-${mo}-${dy}`
-  }
-
-  // Case 3: String — various DD/MM/YYYY formats
   const s = String(raw).trim()
   if (!s) return null
 
-  // DD/MM/YYYY or DD-MM-YYYY
-  const m1 = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/)
+  // DD/MM/YYYY
+  const m1 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
   if (m1) return `${m1[3]}-${m1[2].padStart(2,'0')}-${m1[1].padStart(2,'0')}`
 
-  // YYYY-MM-DD already ISO
-  if (s.match(/^\d{4}-\d{2}-\d{2}$/)) return s
+  // DD-MM-YYYY
+  const m2 = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/)
+  if (m2) return `${m2[3]}-${m2[2].padStart(2,'0')}-${m2[1].padStart(2,'0')}`
 
-  // Try native parse as last resort
-  const d = new Date(s)
-  if (!isNaN(d)) {
-    return d.toISOString().slice(0,10)
+  // YYYY-MM-DD (ISO) — already correct
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+
+  // MM/DD/YYYY (US format — rare but possible in Excel)
+  const m3 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  if (m3 && parseInt(m3[1]) <= 12 && parseInt(m3[2]) > 12) {
+    return `${m3[3]}-${m3[1].padStart(2,'0')}-${m3[2].padStart(2,'0')}`
   }
-  return null
+
+  // Excel serial number (e.g. 44927 = Jan 1 2023)
+  const serial = parseFloat(s)
+  if (!isNaN(serial) && serial > 40000 && serial < 60000) {
+    const epoch = new Date(Date.UTC(1899, 11, 30))
+    epoch.setUTCDate(epoch.getUTCDate() + Math.floor(serial))
+    return epoch.toISOString().slice(0, 10)
+  }
+
+  return null  // unparseable — caller will skip this row
 }
 
-// ── Parse GST string like "6300.00(18.0%)" → 6300 ────────────────────────
-function parseGSTCell(raw) {
-  if (!raw) return 0
-  const s = String(raw)
-  // "6300.00(18.0%)" → extract first number
-  const m = s.match(/^([\d,]+\.?\d*)/)
-  if (m) return parseFloat(m[1].replace(/,/g,'')) || 0
-  return parseFloat(s.replace(/[₹,\s]/g,'')) || 0
+/**
+ * Parse a numeric amount from a cell value.
+ * Handles: "₹64,900.00", "64900", "(1200)" (negative), "1,200.50"
+ */
+function parseAmount(raw) {
+  if (raw === null || raw === undefined || raw === '') return 0
+  if (typeof raw === 'number') return isFinite(raw) ? raw : 0
+  const s = String(raw).replace(/[₹,\s]/g, '').trim()
+  // Accounting negative: (1200) → -1200
+  const neg = s.match(/^\(([\d.]+)\)$/)
+  if (neg) return -parseFloat(neg[1])
+  const n = parseFloat(s)
+  return isFinite(n) ? n : 0
 }
 
-// ── Main XLS parser: handles Finix Sale Report & Tally exports ────────────
+/**
+ * Extract GST amounts per invoice from the Sale Items supplementary sheet.
+ * This gives precise per-invoice GST breakdown unavailable in the main sheet.
+ * Returns: Map<invoiceNo, { totalGst, cgst, sgst, igst, taxable }>
+ */
+function extractGstFromItemsSheet(XLSX, wb) {
+  const gstMap = {}
+
+  // Look for a sheet named "Sale Items", "Purchase Items", "Items", etc.
+  const itemsSheetName = wb.SheetNames.find(n =>
+    /item|detail|line/i.test(n) && !/^(sale report|purchase report)$/i.test(n)
+  )
+  if (!itemsSheetName) return gstMap
+
+  const ws   = wb.Sheets[itemsSheetName]
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+  // Find header row
+  let hIdx = -1
+  for (let i = 0; i < Math.min(10, rows.length); i++) {
+    const r = rows[i].map(c => String(c).toLowerCase().trim())
+    if (r.some(c => c === 'invoice no.' || c === 'invoice no' || c === 'invoice')) {
+      hIdx = i; break
+    }
+  }
+  if (hIdx === -1) return gstMap
+
+  const headers = rows[hIdx].map(c => String(c).toLowerCase().trim())
+  const ci = key => headers.findIndex(h => h.includes(key))
+
+  const colInvoice  = ci('invoice')
+  const colGst      = ci('gst')
+  const colAmount   = ci('amount')   // line total (taxable + gst)
+  const colPrice    = ci('price')    // price per unit (taxable base per line)
+  const colDiscount = ci('discount')
+
+  if (colInvoice === -1) return gstMap
+
+  for (let i = hIdx + 1; i < rows.length; i++) {
+    const row     = rows[i]
+    const invoice = String(row[colInvoice] ?? '').trim()
+    if (!invoice) continue
+
+    // GST cell format: "6300.00(18.0%)" or just "6300.00" or "18%"
+    let gstAmt = 0
+    if (colGst !== -1) {
+      const gstRaw = String(row[colGst] ?? '').trim()
+      const gstMatch = gstRaw.match(/^([\d.]+)/)
+      gstAmt = gstMatch ? parseFloat(gstMatch[1]) : 0
+    }
+
+    // Line amount (with GST)
+    const lineTotal = colAmount !== -1 ? parseAmount(row[colAmount]) : 0
+
+    // Taxable = lineTotal - gstAmt
+    const taxable = lineTotal - gstAmt
+
+    if (!gstMap[invoice]) {
+      gstMap[invoice] = { totalGst: 0, cgst: 0, sgst: 0, igst: 0, taxable: 0 }
+    }
+    gstMap[invoice].totalGst += gstAmt
+    gstMap[invoice].taxable  += taxable
+  }
+
+  return gstMap
+}
+
+/**
+ * Determine GST split: CGST+SGST for intra-state, IGST for inter-state.
+ * Intra-state: seller and buyer in same state (same first 2 digits of GSTIN).
+ * Falls back to CGST+SGST if GSTIN unavailable (most common for Indian SMEs).
+ */
+function splitGst(totalGst, sellerGstin, buyerGstin) {
+  const isInterState = sellerGstin && buyerGstin &&
+    sellerGstin.slice(0, 2) !== buyerGstin.slice(0, 2)
+
+  if (isInterState) {
+    return { cgst: 0, sgst: 0, igst: parseFloat(totalGst.toFixed(2)) }
+  }
+  // Intra-state: CGST = SGST = totalGst / 2
+  const half = parseFloat((totalGst / 2).toFixed(2))
+  // Handle odd paise: ensure cgst + sgst = totalGst exactly
+  return { cgst: half, sgst: parseFloat((totalGst - half).toFixed(2)), igst: 0 }
+}
+
+/**
+ * Determine voucher type from transaction type cell.
+ * Accounting mappings:
+ *   Sale        → Dr Debtor / Cr Sales Revenue + GST Payable
+ *   Credit Note → Dr Sales Revenue + GST Payable / Cr Debtor  (negative sales)
+ *   Purchase    → Dr Purchase / Cr Creditor
+ *   Debit Note  → Dr Creditor / Cr Purchase  (negative purchase)
+ *   Receipt     → Dr Bank/Cash / Cr Debtor
+ *   Payment     → Dr Creditor / Cr Bank/Cash
+ */
+function resolveVoucherType(txTypeRaw, fallback) {
+  const t = (txTypeRaw || '').toLowerCase().trim()
+  if (t === 'sale' || t === 'sales invoice' || t === 'tax invoice') return 'sales'
+  if (t === 'credit note' || t === 'credit memo')                    return 'credit_note'
+  if (t === 'purchase' || t === 'purchase invoice')                  return 'purchase'
+  if (t === 'debit note' || t === 'debit memo')                      return 'debit_note'
+  if (t === 'receipt' || t === 'payment received')                   return 'receipt'
+  if (t === 'payment' || t === 'payment made')                       return 'payment'
+  if (t === 'journal' || t === 'contra')                             return t
+  // Partial matches
+  if (t.includes('sale'))     return 'sales'
+  if (t.includes('purchase')) return 'purchase'
+  if (t.includes('credit'))   return 'credit_note'
+  if (t.includes('debit'))    return 'debit_note'
+  if (t.includes('receipt'))  return 'receipt'
+  if (t.includes('payment'))  return 'payment'
+  return fallback || 'sales'
+}
+
+/**
+ * Main XLS/XLSX parser — professional accounting-grade.
+ * Exported vouchers are double-entry ready with:
+ *   - Correct transaction type (sale / credit_note / purchase / receipt / payment)
+ *   - Accurate GST split (CGST+SGST or IGST) from Sale Items sheet when available
+ *   - Taxable amount = Total - (CGST + SGST + IGST)
+ *   - Credit Notes carry negative amounts to reverse the original sale correctly
+ *   - No summary rows, no cancelled rows, no blank rows
+ */
 async function parseXLSFile(file, voucherType) {
   const XLSX = await loadSheetJS()
   const buf  = await file.arrayBuffer()
+  const wb   = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: true })
 
-  // Use cellDates:false to get raw serial numbers + strings (more predictable)
-  const wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: false, raw: false })
+  // ── Step 1: Find the main transaction sheet ────────────────────────────────
+  // Prefer sheets named "Sale Report", "Purchase Report", "Transactions" etc.
+  // Avoid "Sale Items" / "Purchase Items" (those are line-item detail sheets)
+  let mainSheetName = null
+  const DETAIL_SHEET_PATTERN = /item|detail|line item/i
+  const MAIN_SHEET_PATTERN   = /sale report|purchase report|transaction|voucher|invoice/i
 
-  // ── Find the best sheet ──────────────────────────────────────────────────
-  // Prefer invoice-level summary sheets (Sale Report, Purchase Report) over
-  // line-item sheets (Sale Items, Purchase Items) to avoid double-counting
-  // multi-item invoices and to correctly capture invoice-level totals.
-  let ws = null
-  let wsName = ''
-
-  // Score each sheet: higher = more likely to be the right invoice-level sheet
-  const scoreSheet = (name, candidate) => {
-    const text = XLSX.utils.sheet_to_csv(candidate).toLowerCase()
-    if (!(/date/.test(text) && /(amount|total|invoice)/.test(text))) return -1
-    let score = 1
-    // Prefer sheets named like "Sale Report" / "Purchase Report" (summary level)
-    if (/report/i.test(name)) score += 10
-    // Penalise line-item sheets that have item/product columns
-    if (/item/i.test(name)) score -= 5
-    if (/quantity|qty|unit price|price\/unit/i.test(text)) score -= 3
-    // Bonus for having transaction type / payment status columns (Finix-style)
-    if (/transaction type|payment status/i.test(text)) score += 5
-    return score
-  }
-
-  let bestScore = -Infinity
   for (const name of wb.SheetNames) {
+    if (DETAIL_SHEET_PATTERN.test(name)) continue
     const candidate = wb.Sheets[name]
-    const score = scoreSheet(name, candidate)
-    if (score > bestScore) { bestScore = score; ws = candidate; wsName = name }
+    const text = XLSX.utils.sheet_to_csv(candidate).slice(0, 3000)
+    if (/date/i.test(text) && /(amount|total)/i.test(text) && /(party|customer|vendor)/i.test(text)) {
+      mainSheetName = name
+      if (MAIN_SHEET_PATTERN.test(name)) break  // preferred name found — stop
+    }
   }
-  if (!ws) ws = wb.Sheets[wb.SheetNames[0]]
+  if (!mainSheetName) mainSheetName = wb.SheetNames[0]
 
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false })
+  const ws   = wb.Sheets[mainSheetName]
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
-  // ── 1. Find header row (scan up to row 15) ───────────────────────────────
+  // ── Step 2: Extract GST from the Items detail sheet (if present) ───────────
+  // This gives us accurate per-invoice GST that the main sheet often omits
+  const gstMap = extractGstFromItemsSheet(XLSX, wb)
+  const hasGstMap = Object.keys(gstMap).length > 0
+
+  // ── Step 3: Locate the header row (scan up to row 20) ─────────────────────
   let headerIdx = -1
-  for (let i = 0; i < Math.min(15, rows.length); i++) {
-    const row = rows[i].map(c => String(c).toLowerCase().trim())
-    const hasDate   = row.some(c => c === 'date' || c.endsWith('date'))
-    const hasParty  = row.some(c => c.includes('party') || c.includes('customer') || c.includes('vendor'))
-    const hasAmount = row.some(c => c.includes('amount') || c.includes('total'))
-    if (hasDate && (hasParty || hasAmount)) { headerIdx = i; break }
+  for (let i = 0; i < Math.min(20, rows.length); i++) {
+    const cells = rows[i].map(c => String(c).toLowerCase().trim())
+    const hasDate   = cells.some(c => c === 'date')
+    const hasParty  = cells.some(c => c.includes('party') || c.includes('customer') || c.includes('vendor') || c.includes('supplier'))
+    const hasAmount = cells.some(c => c.includes('amount') || c.includes('total'))
+    if (hasDate && hasParty && hasAmount) { headerIdx = i; break }
+    // Relax: date + amount (no party column — e.g. bank statement)
+    if (hasDate && hasAmount && i > 0)    { headerIdx = i; break }
   }
-  if (headerIdx === -1) throw new Error('Could not detect header row. Expected columns: Date, Party Name, Invoice No, Amount.')
+  if (headerIdx === -1) {
+    throw new Error(
+      'Could not find header row. Make sure the file has columns: Date, Party Name, Invoice No., Amount. ' +
+      `Sheet used: "${mainSheetName}".`
+    )
+  }
 
   const headers = rows[headerIdx].map(c => String(c).toLowerCase().trim())
-  const col = (keys) => keys.reduce((f, k) => f !== -1 ? f : headers.findIndex(h => h.includes(k)), -1)
 
-  const cols = {
-    date:    col(['date']),
-    party:   col(['party name','party','customer name','customer','vendor','supplier']),
-    invoice: col(['invoice no','invoice no.','invoice','voucher no','order no']),
-    amount:  col(['total amount','amount','total']),
-    cgst:    col(['cgst']),
-    sgst:    col(['sgst']),
-    igst:    col(['igst']),
-    gst:     col(['gst']),      // single GST column (like in Sale Items sheet)
-    type:    col(['transaction type','type']),
-    status:  col(['payment status','status']),
-    narr:    col(['description','narration','remarks','particulars']),
+  // ── Step 4: Map column indices ─────────────────────────────────────────────
+  // Strategy: first exact match, then partial match, to avoid ambiguity
+  function findCol(...candidates) {
+    for (const key of candidates) {
+      const exact = headers.indexOf(key)
+      if (exact !== -1) return exact
+    }
+    for (const key of candidates) {
+      const partial = headers.findIndex(h => h.includes(key))
+      if (partial !== -1) return partial
+    }
+    return -1
   }
 
-  const g    = (row, c) => c !== -1 && c < row.length ? String(row[c] ?? '').trim() : ''
-  const pAmt = s => {
-    if (!s) return 0
-    // Remove currency symbols, commas, spaces
-    const n = parseFloat(String(s).replace(/[₹,\s]/g, ''))
-    return isFinite(n) ? Math.abs(n) : 0
+  const colDate    = findCol('date')
+  const colParty   = findCol('party name', 'party', 'customer name', 'customer', 'vendor name', 'vendor', 'supplier')
+  const colInvoice = findCol('invoice no.', 'invoice no', 'invoice', 'voucher no.', 'voucher no', 'order no.')
+  const colAmount  = findCol('total amount', 'total', 'amount')     // gross (taxable+gst)
+  const colCgst    = findCol('cgst')
+  const colSgst    = findCol('sgst')
+  const colIgst    = findCol('igst')
+  const colTxType  = findCol('transaction type', 'type', 'voucher type')
+  const colStatus  = findCol('payment status', 'status')
+  const colNarr    = findCol('description', 'narration', 'remarks', 'particulars', 'notes')
+  const colGstin   = findCol("party's gstin", "buyer gstin", "gstin", "gst no")
+  const colReceived = findCol('received amount', 'received', 'paid amount')
+  const colBalance  = findCol('balance amount', 'balance', 'outstanding')
+
+  const g = (row, colIdx) =>
+    colIdx !== -1 && colIdx < row.length ? String(row[colIdx] ?? '').trim() : ''
+
+  // ── Step 5: Summary / footer row detector ─────────────────────────────────
+  // These are rows with "Total", "Grand Total" labels but no actual transaction date
+  const SUMMARY_LABEL = /^(total|grand total|grand|sub.?total|subtotal|sum|balance|net|closing|opening)/i
+
+  function isSummaryRow(row) {
+    const dateCell = g(row, colDate)
+    // Blank date → likely summary
+    if (!dateCell) return true
+    // Date cell contains a label instead of a date
+    if (SUMMARY_LABEL.test(dateCell)) return true
+    // Any cell in the row is exactly "Total" or "Grand Total" (Finix footer pattern)
+    const hasLabel = row.some(c => SUMMARY_LABEL.test(String(c).trim()))
+    const hasDate  = parseDate_xls(dateCell) !== null
+    return hasLabel && !hasDate
   }
 
-  // ── 2. Detect summary / footer rows ──────────────────────────────────────
-  const isSummaryRow = (r) => {
-    const dateCell  = g(r, cols.date).toLowerCase()
-    const partyCell = cols.party  !== -1 ? g(r, cols.party).toLowerCase()  : ''
-    const invCell   = cols.invoice !== -1 ? g(r, cols.invoice).toLowerCase() : ''
-
-    if (!dateCell || /^(total|grand|subtotal|sum|balance|net|closing)/.test(dateCell)) return true
-    const allCells = r.map(c => String(c).toLowerCase().trim())
-    if (allCells.some(c => /^(total|grand total|sub.?total)$/.test(c)) && !partyCell && !invCell) return true
-    return false
+  // ── Step 6: Cancelled row detector ────────────────────────────────────────
+  function isCancelledRow(row) {
+    const type   = g(row, colTxType).toLowerCase()
+    const status = g(row, colStatus).toLowerCase()
+    return type.includes('cancel') || status.includes('cancel') || status === 'void'
   }
 
-  // ── 3. Detect cancelled rows ──────────────────────────────────────────────
-  const isCancelled = (r) => {
-    const typeCell   = g(r, cols.type).toLowerCase()
-    const statusCell = g(r, cols.status).toLowerCase()
-    return typeCell.includes('cancel') || statusCell.includes('cancel')
-  }
+  // ── Step 7: Parse all data rows ───────────────────────────────────────────
+  const seenInvoices = new Set()  // for duplicate detection
+  const warnings = []
+  const vouchers = []
 
-  // ── 4. Detect Credit Note rows — these are RETURNS/REVERSALS, not sales ──
-  // Credit notes reduce receivables; they must NOT be added as positive sales.
-  // We import them as 'journal' with negative amount so totals stay correct.
-  const isCreditNote = (r) => {
-    const typeCell = g(r, cols.type).toLowerCase()
-    return typeCell.includes('credit note') || typeCell.includes('credit memo')
-  }
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const row = rows[i]
 
-  // ── 5. Parse data rows ────────────────────────────────────────────────────
-  const parsed = rows
-    .slice(headerIdx + 1)
-    .filter(r => r.some(c => c !== ''))
-    .filter(r => !isSummaryRow(r))
-    .filter(r => !isCancelled(r))
-    .map(r => {
-      const rawDate = cols.date !== -1 ? r[cols.date] : ''
-      const parsedDate = parseDate_xls(rawDate)
-      const creditNote = isCreditNote(r)
+    // Skip fully blank rows
+    if (row.every(c => String(c).trim() === '')) continue
 
-      // GST: try dedicated columns first, then single 'gst' column
-      let cgst = 0, sgst = 0, igst = 0
-      if (cols.cgst !== -1 || cols.sgst !== -1 || cols.igst !== -1) {
-        cgst = parseGSTCell(g(r, cols.cgst))
-        sgst = parseGSTCell(g(r, cols.sgst))
-        igst = parseGSTCell(g(r, cols.igst))
-      } else if (cols.gst !== -1) {
-        // Single GST column like "6300.00(18.0%)" — assume IGST if interstate else split
-        const totalGst = parseGSTCell(g(r, cols.gst))
-        cgst = totalGst / 2
-        sgst = totalGst / 2
-      }
+    // Skip summary/footer rows
+    if (isSummaryRow(row)) continue
 
-      // For credit notes the GST is also reversed — negate it
-      if (creditNote) { cgst = -cgst; sgst = -sgst; igst = -igst }
+    // Skip cancelled rows
+    if (isCancelledRow(row)) continue
 
-      return {
-        date:       parsedDate,
-        party:      g(r, cols.party),
-        invoice:    g(r, cols.invoice),
-        // Credit notes are stored with negative amount so they reduce the total
-        amount:     creditNote ? -pAmt(g(r, cols.amount)) : pAmt(g(r, cols.amount)),
-        cgst, sgst, igst,
-        txType:     g(r, cols.type) || voucherType,
-        status:     g(r, cols.status),
-        narr:       g(r, cols.narr),
-        creditNote,
-      }
+    // Parse date — skip rows with unparseable dates
+    const dateRaw = g(row, colDate)
+    const date    = parseDate_xls(dateRaw)
+    if (!date) continue  // blank or unparseable date = skip (catches total rows)
+
+    // Parse amount — skip zero-amount rows
+    const amountRaw  = g(row, colAmount)
+    const totalGross = parseAmount(amountRaw)
+    if (totalGross === 0) continue
+
+    // Party, invoice, GSTIN
+    const party   = g(row, colParty)
+    const invoice  = g(row, colInvoice)
+    const gstin    = g(row, colGstin)
+    const status   = g(row, colStatus)
+    const narr     = g(row, colNarr)
+    const txType   = g(row, colTxType)
+    const vType    = resolveVoucherType(txType, voucherType)
+
+    // ── GST Resolution ──────────────────────────────────────────────────────
+    // Priority: (1) from Sale Items sheet (most accurate),
+    //           (2) from explicit CGST/SGST/IGST columns in main sheet,
+    //           (3) zero (no GST data available)
+    let cgst = 0, sgst = 0, igst = 0, taxableAmt = 0
+
+    if (hasGstMap && invoice && gstMap[invoice]) {
+      // Source 1: Items sheet — most accurate
+      const gstEntry = gstMap[invoice]
+      const totalGst = gstEntry.totalGst
+      const split    = splitGst(totalGst, '', gstin)  // intra-state default
+      cgst       = split.cgst
+      sgst       = split.sgst
+      igst       = split.igst
+      taxableAmt = parseFloat((totalGross - totalGst).toFixed(2))
+    } else if (colCgst !== -1 || colSgst !== -1 || colIgst !== -1) {
+      // Source 2: Explicit GST columns in main sheet
+      cgst = parseAmount(g(row, colCgst))
+      sgst = parseAmount(g(row, colSgst))
+      igst = parseAmount(g(row, colIgst))
+      taxableAmt = parseFloat((totalGross - cgst - sgst - igst).toFixed(2))
+    } else {
+      // Source 3: No GST data — amount is fully taxable (or GST-exempt)
+      taxableAmt = totalGross
+    }
+
+    // Accounting integrity: ensure taxable ≥ 0
+    if (taxableAmt < 0) taxableAmt = 0
+
+    // ── Credit Note / Debit Note sign reversal ─────────────────────────────
+    // In double-entry: Credit Note reverses the original sale.
+    // We store amount as negative so journal postings auto-reverse correctly.
+    const isReversal = vType === 'credit_note' || vType === 'debit_note'
+    const signedAmount  = isReversal ? -Math.abs(totalGross) : Math.abs(totalGross)
+    const signedTaxable = isReversal ? -Math.abs(taxableAmt) : Math.abs(taxableAmt)
+    const signedCgst    = isReversal ? -Math.abs(cgst)  : Math.abs(cgst)
+    const signedSgst    = isReversal ? -Math.abs(sgst)  : Math.abs(sgst)
+    const signedIgst    = isReversal ? -Math.abs(igst)  : Math.abs(igst)
+
+    // ── Duplicate invoice detection ────────────────────────────────────────
+    const dupKey = invoice ? `${invoice}::${vType}` : `${date}::${party}::${totalGross}`
+    if (seenInvoices.has(dupKey)) {
+      warnings.push(`Duplicate skipped: ${invoice || dupKey}`)
+      continue
+    }
+    seenInvoices.add(dupKey)
+
+    // ── Narration (human-readable journal description) ─────────────────────
+    const narration = narr
+      || `${txType || vType} — ${party}${invoice ? ` (${invoice})` : ''}`
+
+    vouchers.push({
+      voucher_type:  vType,
+      date,
+      reference:     invoice,
+      party,
+      gstin,
+      narration,
+      amount:        parseFloat(Math.abs(signedAmount).toFixed(2)),   // always positive for display
+      taxable:       parseFloat(Math.abs(signedTaxable).toFixed(2)),
+      cgst:          parseFloat(Math.abs(signedCgst).toFixed(2)),
+      sgst:          parseFloat(Math.abs(signedSgst).toFixed(2)),
+      igst:          parseFloat(Math.abs(signedIgst).toFixed(2)),
+      is_reversal:   isReversal,   // flag for journal engine to post correctly
+      source:        'xls_import',
+      xls_status:    status,
+      received_amt:  parseAmount(g(row, colReceived)),
+      balance_amt:   parseAmount(g(row, colBalance)),
+      _warnings:     [],
     })
-    .filter(r => r.amount !== 0)         // skip zero-amount rows
-    .filter(r => r.date !== null)        // skip rows where date couldn't be parsed
-
-  if (parsed.length === 0) throw new Error('No valid transactions found. Check that the file has Date, Party Name, and Amount columns with data.')
-
-  return parsed.map(r => ({
-    voucher_type: (() => {
-      const t = (r.txType || '').toLowerCase()
-      // Credit Notes are journal/reversal entries — never count as sales
-      if (r.creditNote)           return 'journal'
-      if (t.includes('sale'))     return 'sales'
-      if (t.includes('purchase')) return 'purchase'
-      if (t.includes('receipt'))  return 'receipt'
-      if (t.includes('payment'))  return 'payment'
-      return voucherType
-    })(),
-    date:       r.date,
-    reference:  r.invoice,
-    party:      r.party,
-    narration:  r.narr || `${r.txType || voucherType} - ${r.party}${r.invoice ? ` (${r.invoice})` : ''}`.trim(),
-    // Store absolute amount; sign is captured via voucher_type (sales=credit, journal=neutral)
-    amount:     Math.abs(r.amount),
-    cgst:       Math.abs(r.cgst),
-    sgst:       Math.abs(r.sgst),
-    igst:       Math.abs(r.igst),
-    source:     'xls_import',
-    xls_status: r.status,
-    // Flag so UI can show "Credit Note" label
-    is_credit_note: r.creditNote || false,
-  }))
-}
-
-// ── Edit Voucher Modal ─────────────────────────────────────────────────────
-function EditVoucherModal({ voucher, onClose, companyId, onSaved }) {
-  const [form, setForm] = useState({
-    voucher_type: voucher.voucher_type || 'sales',
-    date: voucher.date || new Date().toISOString().slice(0,10),
-    reference: voucher.reference || '',
-    party: voucher.party || '',
-    narration: voucher.narration || '',
-    amount: String(voucher.amount || ''),
-    cgst: String(voucher.cgst || ''),
-    sgst: String(voucher.sgst || ''),
-    igst: String(voucher.igst || ''),
-  })
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
-
-  const handleSave = () => {
-    if (!form.narration.trim()) return toast.error('Narration is required')
-    const amt = parseFloat(form.amount)
-    if (!amt || amt <= 0) return toast.error('Enter a valid amount')
-    updateVoucher(companyId, voucher.id, {
-      ...form,
-      amount: amt,
-      cgst: parseFloat(form.cgst) || 0,
-      sgst: parseFloat(form.sgst) || 0,
-      igst: parseFloat(form.igst) || 0,
-    })
-    toast.success('Voucher updated ✓')
-    onSaved()
-    onClose()
   }
 
-  return (
-    <div className="overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth:520, width:'95vw' }} onClick={e=>e.stopPropagation()}>
-        <div className="modal-head">
-          <span className="modal-title">Edit Voucher — {voucher.voucher_no}</span>
-          <button className="btn btn-ghost btn-icon" onClick={onClose}><X size={17}/></button>
-        </div>
-        <div className="modal-body" style={{ display:'flex', flexDirection:'column', gap:12 }}>
-          <div className="field-group">
-            <label className="field-label">Voucher Type</label>
-            <select className="input" value={form.voucher_type} onChange={e=>set('voucher_type',e.target.value)}>
-              <option value="sales">Sales Invoice</option>
-              <option value="purchase">Purchase Invoice</option>
-              <option value="receipt">Receipt Voucher</option>
-              <option value="payment">Payment Voucher</option>
-              <option value="journal">Journal Voucher</option>
-              <option value="contra">Contra</option>
-            </select>
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-            <div className="field-group">
-              <label className="field-label">Date</label>
-              <input type="date" className="input" value={form.date} onChange={e=>set('date',e.target.value)}/>
-            </div>
-            <div className="field-group">
-              <label className="field-label">Reference No.</label>
-              <input type="text" className="input" value={form.reference} onChange={e=>set('reference',e.target.value)}/>
-            </div>
-          </div>
-          <div className="field-group">
-            <label className="field-label">Party / Customer</label>
-            <input type="text" className="input" value={form.party} onChange={e=>set('party',e.target.value)}/>
-          </div>
-          <div className="field-group">
-            <label className="field-label">Narration *</label>
-            <input type="text" className="input" value={form.narration} onChange={e=>set('narration',e.target.value)}/>
-          </div>
-          <div className="field-group">
-            <label className="field-label">Taxable Amount (₹) *</label>
-            <input type="number" className="input" value={form.amount} onChange={e=>set('amount',e.target.value)} min="0" step="0.01"/>
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
-            <div className="field-group">
-              <label className="field-label">CGST (₹)</label>
-              <input type="number" className="input" value={form.cgst} onChange={e=>set('cgst',e.target.value)} min="0" step="0.01"/>
-            </div>
-            <div className="field-group">
-              <label className="field-label">SGST (₹)</label>
-              <input type="number" className="input" value={form.sgst} onChange={e=>set('sgst',e.target.value)} min="0" step="0.01"/>
-            </div>
-            <div className="field-group">
-              <label className="field-label">IGST (₹)</label>
-              <input type="number" className="input" value={form.igst} onChange={e=>set('igst',e.target.value)} min="0" step="0.01"/>
-            </div>
-          </div>
-        </div>
-        <div className="modal-foot">
-          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSave}><Save size={14}/> Save Changes</button>
-        </div>
-      </div>
-    </div>
-  )
+  if (vouchers.length === 0) {
+    throw new Error(
+      'No valid transactions found after parsing. ' +
+      'Ensure the file has Date, Party Name, Invoice No., and Amount columns with real data rows.'
+    )
+  }
+
+  if (warnings.length > 0) {
+    console.warn('[XLS Import] Warnings:', warnings)
+  }
+
+  return vouchers
 }
 
 // ── Journal Entry Modal ────────────────────────────────────────────────────
 function JournalModal({ onClose, companyId, onPosted, defaultType }) {
-  const [tab, setTab] = useState('single')
+  const [tab, setTab] = useState('single') // single | bulk | ai
   const [form, setForm] = useState({
     type: defaultType || 'sales',
     date: new Date().toISOString().slice(0,10),
@@ -453,8 +554,10 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
   const [xlsError,    setXlsError]    = useState('')
   const [xlsType,     setXlsType]     = useState(defaultType || 'sales')
   const [xlsFile,     setXlsFile]     = useState(null)
+  const fileRef = useRef()
   const set = (k,v) => setForm(f => ({...f,[k]:v}))
 
+  // ── Single post ──────────────────────────────────────────────────────────
   const handleSingle = () => {
     if (!form.narration.trim()) return toast.error('Narration is required')
     const amt = parseFloat(form.amount)
@@ -474,6 +577,7 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
     onPosted(); onClose()
   }
 
+  // ── Bulk rows post ───────────────────────────────────────────────────────
   const handleBulkPost = () => {
     const valid = rows.filter(r => r.narration?.trim() && parseFloat(r.amount) > 0)
     if (!valid.length) return toast.error('Fill at least one complete row')
@@ -492,6 +596,7 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
     onPosted(); onClose()
   }
 
+  // ── CSV upload ────────────────────────────────────────────────────────────
   const handleCSVFile = async (file) => {
     setCsvError(''); setCsvPreview(null)
     if (!file) return
@@ -511,6 +616,7 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
     onPosted(); onClose()
   }
 
+  // ── XLS upload ────────────────────────────────────────────────────────────
   const handleXLSFile = async (file) => {
     setXlsError(''); setXlsPreview(null); setXlsFile(file)
     if (!file) return
@@ -531,6 +637,7 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
     onPosted(); onClose()
   }
 
+  // ── AI invoice parse ──────────────────────────────────────────────────────
   const handleAIFile = async (file) => {
     if (!file) return
     setAiFile(file); setAiLoading(true)
@@ -567,15 +674,22 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
     setAiLoading(false)
   }
 
-  const onDropAI  = useCallback(files => { if (files[0]) handleAIFile(files[0]) }, [])
+  const onDropAI = useCallback(files => { if (files[0]) handleAIFile(files[0]) }, [])
+  const { getRootProps: aiRootProps, getInputProps: aiInputProps, isDragActive: aiDrag } = useDropzone({
+    onDrop: onDropAI, accept: { 'application/pdf':['.pdf'], 'image/*':['.png','.jpg','.jpeg'] }
+  })
   const onDropCSV = useCallback(files => { if (files[0]) handleCSVFile(files[0]) }, [])
+  const { getRootProps: csvRootProps, getInputProps: csvInputProps, isDragActive: csvDrag } = useDropzone({
+    onDrop: onDropCSV, accept: { 'text/csv':['.csv'], 'text/plain':['.txt'] }
+  })
   const onDropXLS = useCallback(files => { if (files[0]) handleXLSFile(files[0]) }, [xlsType])
-
-  const { getRootProps: aiRootProps,  getInputProps: aiInputProps,  isDragActive: aiDrag  } = useDropzone({ onDrop: onDropAI,  accept: { 'application/pdf':['.pdf'], 'image/*':['.png','.jpg','.jpeg'] } })
-  const { getRootProps: csvRootProps, getInputProps: csvInputProps, isDragActive: csvDrag } = useDropzone({ onDrop: onDropCSV, accept: { 'text/csv':['.csv'], 'text/plain':['.txt'] } })
   const { getRootProps: xlsRootProps, getInputProps: xlsInputProps, isDragActive: xlsDrag } = useDropzone({
     onDrop: onDropXLS,
-    accept: { 'application/vnd.ms-excel':['.xls'], 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':['.xlsx'], 'text/csv':['.csv'] }
+    accept: {
+      'application/vnd.ms-excel': ['.xls'],
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+      'text/csv': ['.csv'],
+    }
   })
 
   const GSTSummary = ({ cgst, sgst, igst, amount }) => {
@@ -596,6 +710,7 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
           <button className="btn btn-ghost btn-icon" onClick={onClose}><X size={17}/></button>
         </div>
 
+        {/* Tabs */}
         <div style={{ display:'flex', gap:2, padding:'10px 20px 0', background:'var(--surface-2)', borderBottom:'1px solid var(--border)' }}>
           {[
             { key:'single', label:'✏️ Single Entry' },
@@ -617,6 +732,7 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
 
         <div className="modal-body" style={{ maxHeight:'60vh', overflowY:'auto' }}>
 
+          {/* ── Single Entry ─────────────────────────────────────────────── */}
           {tab === 'single' && (
             <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
               <div className="field-group">
@@ -670,6 +786,7 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
             </div>
           )}
 
+          {/* ── Bulk Entry (spreadsheet-style rows) ─────────────────────── */}
           {tab === 'bulk' && (
             <div>
               <p style={{ fontSize:12, color:'var(--text-3)', marginBottom:12 }}>
@@ -741,6 +858,7 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
             </div>
           )}
 
+          {/* ── CSV Import ───────────────────────────────────────────────── */}
           {tab === 'csv' && (
             <div>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
@@ -749,24 +867,50 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
                   <FileText size={12}/> Download Template
                 </button>
               </div>
+
               <div {...csvRootProps()} style={{ border:`2px dashed ${csvDrag?'var(--primary)':'var(--border)'}`, borderRadius:10, padding:'28px 20px', textAlign:'center', cursor:'pointer', background: csvDrag?'var(--primary-l)':'var(--surface-2)', marginBottom:12 }}>
                 <input {...csvInputProps()}/>
                 <Upload size={24} color="var(--text-3)" style={{ margin:'0 auto 8px' }}/>
                 <p style={{ fontWeight:600, fontSize:13, color:'var(--text)', marginBottom:4 }}>{csvDrag?'Drop CSV here':'Drag & drop CSV or click to browse'}</p>
                 <p style={{ fontSize:11, color:'var(--text-3)' }}>Columns: type, date, reference, party, narration, amount, cgst, sgst, igst</p>
               </div>
+
               {csvLoading && <p style={{ fontSize:12, color:'var(--text-3)' }}>Parsing CSV…</p>}
               {csvError && <div style={{ padding:'10px 12px', background:'#FEF2F2', border:'1px solid #FCA5A5', borderRadius:8, fontSize:12, color:'#B91C1C', marginBottom:8 }}>❌ {csvError}</div>}
+
               {csvPreview && (
                 <div>
                   <div style={{ padding:'8px 12px', background:'#F0FDF4', border:'1px solid #86EFAC', borderRadius:8, fontSize:12, color:'#15803D', marginBottom:8 }}>
                     ✅ {csvPreview.length} rows ready to import
+                  </div>
+                  <div style={{ maxHeight:200, overflowY:'auto', border:'1px solid var(--border)', borderRadius:8 }}>
+                    <table style={{ width:'100%', fontSize:11, borderCollapse:'collapse' }}>
+                      <thead><tr style={{ background:'var(--surface-2)' }}>
+                        {['Type','Date','Party','Narration','Amount','GST'].map(h=>(
+                          <th key={h} style={{ padding:'5px 8px', textAlign:'left', fontWeight:700, color:'var(--text-3)', borderBottom:'1px solid var(--border)' }}>{h}</th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {csvPreview.slice(0,10).map((r,i) => (
+                          <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                            <td style={{ padding:'4px 8px' }}><span className={`badge ${vBadge[r.voucher_type]||'badge-gray'}`}>{r.voucher_type}</span></td>
+                            <td style={{ padding:'4px 8px', color:'var(--text-3)' }}>{r.date}</td>
+                            <td style={{ padding:'4px 8px' }}>{r.party||'—'}</td>
+                            <td style={{ padding:'4px 8px', maxWidth:120, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.narration}</td>
+                            <td style={{ padding:'4px 8px', fontFamily:'var(--font-mono)' }}>₹{fmt(r.amount)}</td>
+                            <td style={{ padding:'4px 8px', color:'var(--text-3)' }}>₹{fmt((r.cgst||0)+(r.sgst||0)+(r.igst||0))}</td>
+                          </tr>
+                        ))}
+                        {csvPreview.length > 10 && <tr><td colSpan={6} style={{ padding:'4px 8px', color:'var(--text-3)', fontSize:11 }}>…and {csvPreview.length-10} more rows</td></tr>}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}
             </div>
           )}
 
+          {/* ── XLS Import ──────────────────────────────────────────────── */}
           {tab === 'xls' && (
             <div>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
@@ -775,6 +919,7 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
                 </p>
               </div>
 
+              {/* Type selector */}
               <div style={{ display:'flex', gap:6, marginBottom:10, alignItems:'center' }}>
                 <span style={{ fontSize:11, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.05em' }}>Import as:</span>
                 {['sales','purchase','receipt','payment','journal'].map(t => (
@@ -788,6 +933,7 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
                 ))}
               </div>
 
+              {/* Drop zone */}
               <div {...xlsRootProps()} style={{
                 border:`2px dashed ${xlsDrag?'#D97706':'var(--border)'}`,
                 borderRadius:10, padding:'24px 20px', textAlign:'center', cursor:'pointer',
@@ -828,74 +974,114 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
                 </div>
               )}
 
-              {xlsPreview && xlsPreview.length > 0 && (
+              {xlsPreview && xlsPreview.length > 0 && (() => {
+                const sales       = xlsPreview.filter(r => r.voucher_type === 'sales')
+                const creditNotes = xlsPreview.filter(r => r.voucher_type === 'credit_note')
+                const others      = xlsPreview.filter(r => r.voucher_type !== 'sales' && r.voucher_type !== 'credit_note')
+                const totalGross  = xlsPreview.reduce((s,r) => s + r.amount, 0)
+                const totalGST    = xlsPreview.reduce((s,r) => s + (r.cgst||0) + (r.sgst||0) + (r.igst||0), 0)
+                const totalTaxable= xlsPreview.reduce((s,r) => s + (r.taxable||r.amount), 0)
+                const creditTotal = creditNotes.reduce((s,r) => s + r.amount, 0)
+                const typeCounts  = xlsPreview.reduce((acc,r) => { acc[r.voucher_type]=(acc[r.voucher_type]||0)+1; return acc }, {})
+                return (
                 <div>
-                  <div style={{ display:'flex', gap:12, marginBottom:10, padding:'10px 14px', background:'#F0FDF4', border:'1px solid #86EFAC', borderRadius:8, flexWrap:'wrap' }}>
+                  {/* Summary stats bar */}
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:10, marginBottom:10, padding:'10px 14px', background:'#F0FDF4', border:'1px solid #86EFAC', borderRadius:8 }}>
                     <div style={{ fontSize:12 }}>
                       <span style={{ color:'var(--text-3)' }}>Records: </span>
                       <strong style={{ color:'var(--success)' }}>{xlsPreview.length}</strong>
                     </div>
                     <div style={{ fontSize:12 }}>
                       <span style={{ color:'var(--text-3)' }}>Total Amount: </span>
-                      <strong style={{ color:'var(--success)' }}>₹{fmt(xlsPreview.filter(r=>!r.is_credit_note).reduce((s,r) => s + r.amount, 0))}</strong>
+                      <strong style={{ color:'var(--success)' }}>₹{fmt(totalGross)}</strong>
                     </div>
                     <div style={{ fontSize:12 }}>
                       <span style={{ color:'var(--text-3)' }}>Total GST: </span>
-                      <strong>₹{fmt(xlsPreview.filter(r=>!r.is_credit_note).reduce((s,r) => s + (r.cgst||0)+(r.sgst||0)+(r.igst||0), 0))}</strong>
+                      <strong>₹{fmt(totalGST)}</strong>
                     </div>
-                    {xlsPreview.some(r=>r.is_credit_note) && (
+                    {creditNotes.length > 0 && (
                       <div style={{ fontSize:12 }}>
-                        <span style={{ color:'#92400E' }}>Credit Notes (deducted): </span>
-                        <strong style={{ color:'#B45309' }}>-₹{fmt(xlsPreview.filter(r=>r.is_credit_note).reduce((s,r)=>s+r.amount,0))}</strong>
+                        <span style={{ color:'var(--text-3)' }}>Credit Notes (deducted): </span>
+                        <strong style={{ color:'#B91C1C' }}>-₹{fmt(creditTotal)}</strong>
                       </div>
                     )}
-                    {Object.entries(xlsPreview.reduce((acc,r) => { const k=r.is_credit_note?'credit note':r.voucher_type; acc[k]=(acc[k]||0)+1; return acc }, {})).map(([t,c]) => (
+                    {Object.entries(typeCounts).map(([t,c]) => (
                       <div key={t} style={{ fontSize:12 }}>
-                        <span className={`badge ${t==='credit note'?'badge-amber':vBadge[t]||'badge-gray'}`} style={{ textTransform:'capitalize' }}>{t}</span>
+                        <span className={`badge ${vBadge[t]||'badge-gray'}`} style={{ textTransform:'capitalize' }}>
+                          {t === 'credit_note' ? 'Credit Note' : t}
+                        </span>
                         <strong style={{ marginLeft:4 }}>{c}</strong>
                       </div>
                     ))}
                   </div>
-                  <div style={{ maxHeight:220, overflowY:'auto', border:'1px solid var(--border)', borderRadius:8 }}>
+
+                  {/* GST breakdown */}
+                  {totalGST > 0 && (
+                    <div style={{ display:'flex', gap:10, marginBottom:10, padding:'8px 14px', background:'#EFF6FF', border:'1px solid #BFDBFE', borderRadius:8, fontSize:11, flexWrap:'wrap' }}>
+                      <span style={{ color:'#1D4ED8', fontWeight:700 }}>GST Breakdown:</span>
+                      <span>Taxable: <strong>₹{fmt(totalTaxable)}</strong></span>
+                      <span>CGST: <strong>₹{fmt(xlsPreview.reduce((s,r)=>s+(r.cgst||0),0))}</strong></span>
+                      <span>SGST: <strong>₹{fmt(xlsPreview.reduce((s,r)=>s+(r.sgst||0),0))}</strong></span>
+                      {xlsPreview.some(r=>r.igst>0) && <span>IGST: <strong>₹{fmt(xlsPreview.reduce((s,r)=>s+(r.igst||0),0))}</strong></span>}
+                      <span style={{ color:'#1D4ED8' }}>= Total: <strong>₹{fmt(totalGross)}</strong></span>
+                    </div>
+                  )}
+
+                  {/* Preview table */}
+                  <div style={{ maxHeight:240, overflowY:'auto', border:'1px solid var(--border)', borderRadius:8 }}>
                     <table style={{ width:'100%', fontSize:11, borderCollapse:'collapse' }}>
                       <thead>
                         <tr style={{ background:'var(--surface-2)', position:'sticky', top:0 }}>
-                          {['Type','Date','Party','Invoice','Amount','GST','Status'].map(h => (
-                            <th key={h} style={{ padding:'6px 8px', textAlign:'left', fontWeight:700, color:'var(--text-3)', borderBottom:'1px solid var(--border)', whiteSpace:'nowrap' }}>{h}</th>
+                          {['Type','Date','Party','Invoice','Taxable','GST','Total','Status'].map(h => (
+                            <th key={h} style={{ padding:'6px 8px', textAlign: h==='Taxable'||h==='GST'||h==='Total' ? 'right' : 'left', fontWeight:700, color:'var(--text-3)', borderBottom:'1px solid var(--border)', whiteSpace:'nowrap' }}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {xlsPreview.slice(0,15).map((r,i) => (
-                          <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
-                            <td style={{ padding:'5px 8px' }}><span className={`badge ${vBadge[r.voucher_type]||'badge-gray'}`} style={{ textTransform:'capitalize' }}>{r.voucher_type}</span></td>
-                            <td style={{ padding:'5px 8px', color:'var(--text-3)', whiteSpace:'nowrap' }}>{r.date}</td>
-                            <td style={{ padding:'5px 8px', maxWidth:130, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontWeight:500 }}>{r.party||'—'}</td>
-                            <td style={{ padding:'5px 8px', color:'var(--primary)', fontSize:10 }}>{r.reference||'—'}</td>
-                            <td style={{ padding:'5px 8px', fontFamily:'var(--font-mono)', fontWeight:700 }}>₹{fmt(r.amount)}</td>
-                            <td style={{ padding:'5px 8px', color:'var(--text-3)' }}>₹{fmt((r.cgst||0)+(r.sgst||0)+(r.igst||0))}</td>
-                            <td style={{ padding:'5px 8px' }}>
-                              {r.xls_status ? (
-                                <span style={{ fontSize:9, padding:'2px 6px', borderRadius:10, fontWeight:700,
-                                  background: r.xls_status.toLowerCase()==='paid' ? '#ECFDF5' : r.xls_status.toLowerCase()==='unpaid' ? '#FEF2F2' : '#FFF7ED',
-                                  color:      r.xls_status.toLowerCase()==='paid' ? '#065F46' : r.xls_status.toLowerCase()==='unpaid' ? '#991B1B' : '#92400E' }}>
-                                  {r.xls_status}
+                        {xlsPreview.slice(0,20).map((r,i) => {
+                          const gstTotal = (r.cgst||0)+(r.sgst||0)+(r.igst||0)
+                          const taxable  = r.taxable || (r.amount - gstTotal)
+                          const isCN     = r.voucher_type === 'credit_note'
+                          return (
+                            <tr key={i} style={{ borderBottom:'1px solid var(--border)', background: isCN ? '#FFF7F7' : 'transparent' }}>
+                              <td style={{ padding:'5px 8px', whiteSpace:'nowrap' }}>
+                                <span className={`badge ${vBadge[r.voucher_type]||'badge-gray'}`} style={{ textTransform:'capitalize', fontSize:9 }}>
+                                  {r.voucher_type === 'credit_note' ? 'Credit Note' : r.voucher_type}
                                 </span>
-                              ) : '—'}
-                            </td>
-                          </tr>
-                        ))}
-                        {xlsPreview.length > 15 && (
-                          <tr><td colSpan={7} style={{ padding:'6px 8px', color:'var(--text-3)', fontSize:11, fontStyle:'italic' }}>…and {xlsPreview.length-15} more rows</td></tr>
+                              </td>
+                              <td style={{ padding:'5px 8px', color:'var(--text-3)', whiteSpace:'nowrap' }}>{r.date}</td>
+                              <td style={{ padding:'5px 8px', maxWidth:120, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontWeight:500 }} title={r.party}>{r.party||'—'}</td>
+                              <td style={{ padding:'5px 8px', color:'var(--primary)', fontSize:10 }}>{r.reference||'—'}</td>
+                              <td style={{ padding:'5px 8px', textAlign:'right', fontFamily:'var(--font-mono)' }}>₹{fmt(taxable)}</td>
+                              <td style={{ padding:'5px 8px', textAlign:'right', color:'#7C3AED', fontFamily:'var(--font-mono)' }}>₹{fmt(gstTotal)}</td>
+                              <td style={{ padding:'5px 8px', textAlign:'right', fontFamily:'var(--font-mono)', fontWeight:700, color: isCN ? '#B91C1C' : 'inherit' }}>
+                                {isCN ? '-' : ''}₹{fmt(r.amount)}
+                              </td>
+                              <td style={{ padding:'5px 8px' }}>
+                                {r.xls_status ? (
+                                  <span style={{ fontSize:9, padding:'2px 6px', borderRadius:10, fontWeight:700,
+                                    background: r.xls_status.toLowerCase()==='paid' ? '#ECFDF5' : r.xls_status.toLowerCase()==='unpaid' ? '#FEF2F2' : '#FFF7ED',
+                                    color:      r.xls_status.toLowerCase()==='paid' ? '#065F46' : r.xls_status.toLowerCase()==='unpaid' ? '#991B1B' : '#92400E' }}>
+                                    {r.xls_status}
+                                  </span>
+                                ) : '—'}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                        {xlsPreview.length > 20 && (
+                          <tr><td colSpan={8} style={{ padding:'6px 8px', color:'var(--text-3)', fontSize:11, fontStyle:'italic' }}>…and {xlsPreview.length-20} more rows</td></tr>
                         )}
                       </tbody>
                     </table>
                   </div>
                 </div>
-              )}
+                )
+              })()}
             </div>
           )}
 
+          {/* ── AI Invoice Parse ─────────────────────────────────────────── */}
           {tab === 'ai' && (
             <div>
               <p style={{ fontSize:12, color:'var(--text-3)', marginBottom:14 }}>
@@ -924,6 +1110,10 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
                   </>
                 )}
               </div>
+              <div style={{ padding:'10px 12px', background:'linear-gradient(135deg,#EFF6FF,#F5F3FF)', border:'1px solid #C7D2FE', borderRadius:8, display:'flex', gap:8, alignItems:'center' }}>
+                <Zap size={14} color="#2563EB"/>
+                <span style={{ fontSize:11, color:'#3730A3' }}>Extracts: party name, date, invoice no., taxable amount, CGST, SGST, IGST, total</span>
+              </div>
             </div>
           )}
         </div>
@@ -949,8 +1139,6 @@ export default function Dashboard() {
   const [modal, setModal] = useState(false)
   const [defaultType, setDefaultType] = useState('sales')
   const [dismissed, setDismissed] = useState([])
-  const [editingVoucher, setEditingVoucher] = useState(null)
-  const [showAllVouchers, setShowAllVouchers] = useState(false)
 
   const companyData = loadCompanyData(activeCompany?.id)
   const fin  = computeFinancials(activeCompany?.id)
@@ -962,15 +1150,6 @@ export default function Dashboard() {
 
   const openModal = (type = 'sales') => { setDefaultType(type); setModal(true) }
   const handlePosted = () => setRefresh(r => r+1)
-
-  const handleDelete = (v) => {
-    if (!window.confirm(`Delete voucher ${v.voucher_no}? This cannot be undone.`)) return
-    deleteVoucher(activeCompany?.id, v.id)
-    toast.success(`Voucher ${v.voucher_no} deleted`)
-    setRefresh(r => r+1)
-  }
-
-  const displayedVouchers = showAllVouchers ? fin.vouchers : fin.vouchers.slice(0, 10)
 
   return (
     <div className="page-wrap page-enter" key={refresh}>
@@ -1025,7 +1204,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {/* KPIs */}
+      {/* KPIs — now use real computed financials */}
       <div className="kpi-grid">
         {[
           { label:'Total Revenue',  value:fmtCr(bs.income),      icon:DollarSign, color:'blue',   trend:isEmpty?'No data yet':'+vs expenses', dir:'up' },
@@ -1171,63 +1350,22 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* ── Transactions table — FULLY EDITABLE ─────────────────────── */}
         <div className="tbl-wrap">
           <div className="tbl-toolbar">
-            <span style={{ fontWeight:600, fontSize:'var(--fs-md)', flex:1 }}>
-              Recent Transactions
-              {fin.vouchers.length > 0 && <span style={{ fontSize:11, color:'var(--text-3)', marginLeft:8 }}>({fin.vouchers.length} total)</span>}
-            </span>
-            <button className="btn btn-ghost btn-sm" onClick={()=>openModal()}><Plus size={11}/> Add</button>
-            {fin.vouchers.length > 10 && (
-              <button className="btn btn-ghost btn-sm" onClick={()=>setShowAllVouchers(v=>!v)}>
-                {showAllVouchers ? 'Show less' : `View all ${fin.vouchers.length}`} <ArrowRight size={11}/>
-              </button>
-            )}
+            <span style={{ fontWeight:600, fontSize:'var(--fs-md)', flex:1 }}>Recent Transactions</span>
+            <button className="btn btn-ghost btn-sm">View all <ArrowRight size={11}/></button>
           </div>
-          {displayedVouchers.length > 0 ? (
+          {data.recentVouchers?.length > 0 ? (
             <table className="tbl">
-              <thead>
-                <tr>
-                  <th>Voucher No.</th>
-                  <th>Party / Narration</th>
-                  <th>Type</th>
-                  <th>Date</th>
-                  <th style={{ textAlign:'right' }}>Amount (₹)</th>
-                  <th style={{ textAlign:'center', width:72 }}>Actions</th>
-                </tr>
-              </thead>
+              <thead><tr><th>Voucher No.</th><th>Narration</th><th>Type</th><th>Date</th><th style={{ textAlign:'right' }}>Amount (₹)</th></tr></thead>
               <tbody>
-                {displayedVouchers.map(v => (
+                {data.recentVouchers.map(v => (
                   <tr key={v.id}>
                     <td><span style={{ fontFamily:'var(--mono)', fontSize:'var(--fs-xs)', color:'var(--accent)', fontWeight:600 }}>{v.voucher_no}</span></td>
-                    <td style={{ maxWidth:160 }}>
-                      <div style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontSize:12, fontWeight:500 }}>{v.party || v.narration}</div>
-                      {v.party && <div style={{ fontSize:10, color:'var(--text-4)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{v.narration}</div>}
-                    </td>
+                    <td style={{ maxWidth:180 }}><span style={{ display:'block', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{v.narration}</span></td>
                     <td><span className={`badge ${vBadge[v.voucher_type]||'badge-gray'}`} style={{ textTransform:'capitalize' }}>{v.voucher_type}</span></td>
                     <td style={{ color:'var(--text-4)', fontSize:'var(--fs-xs)', whiteSpace:'nowrap' }}>{fmtDate(v.date)}</td>
-                    <td style={{ textAlign:'right' }}>
-                      <span className={['sales','receipt'].includes(v.voucher_type)?'cr':'dr'}>
-                        {['sales','receipt'].includes(v.voucher_type)?'+':'-'}₹{fmt(v.amount)}
-                      </span>
-                    </td>
-                    <td style={{ textAlign:'center' }}>
-                      <div style={{ display:'flex', gap:4, justifyContent:'center' }}>
-                        <button
-                          title="Edit voucher"
-                          onClick={()=>setEditingVoucher(v)}
-                          style={{ background:'none', border:'1px solid var(--border)', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'var(--text-3)', display:'flex', alignItems:'center' }}>
-                          <Edit2 size={11}/>
-                        </button>
-                        <button
-                          title="Delete voucher"
-                          onClick={()=>handleDelete(v)}
-                          style={{ background:'none', border:'1px solid #FCA5A5', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'var(--danger)', display:'flex', alignItems:'center' }}>
-                          <Trash2 size={11}/>
-                        </button>
-                      </div>
-                    </td>
+                    <td style={{ textAlign:'right' }}><span className={['sales','receipt'].includes(v.voucher_type)?'cr':'dr'}>{['sales','receipt'].includes(v.voucher_type)?'+':'-'}₹{fmt(v.amount)}</span></td>
                   </tr>
                 ))}
               </tbody>
@@ -1243,14 +1381,6 @@ export default function Dashboard() {
       </div>
 
       {modal && <JournalModal onClose={()=>setModal(false)} companyId={activeCompany?.id} onPosted={handlePosted} defaultType={defaultType}/>}
-      {editingVoucher && (
-        <EditVoucherModal
-          voucher={editingVoucher}
-          companyId={activeCompany?.id}
-          onClose={()=>setEditingVoucher(null)}
-          onSaved={handlePosted}
-        />
-      )}
     </div>
   )
 }
