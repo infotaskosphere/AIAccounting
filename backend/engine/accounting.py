@@ -608,3 +608,116 @@ class PaymentGatewayHandler:
 #         transactions = parser.parse_pdf(content)
 #     # Stage transactions for AI matching...
 #     return {"imported": len(transactions)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ADDED IN v2 UPGRADE — helpers used by transaction_service.py
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from datetime import date as _date
+
+
+def get_fiscal_year(for_date: _date) -> str:
+    """Return 'YYYY-YY' fiscal year string (Apr–Mar Indian FY)."""
+    if for_date.month >= 4:
+        return f"{for_date.year}-{str(for_date.year + 1)[2:]}"
+    return f"{for_date.year - 1}-{str(for_date.year)[2:]}"
+
+
+def fiscal_year_dates(fiscal_year: str) -> tuple[_date, _date]:
+    """Return (start_date, end_date) for a fiscal year like '2024-25'."""
+    start_year = int(fiscal_year.split("-")[0])
+    return _date(start_year, 4, 1), _date(start_year + 1, 3, 31)
+
+
+async def post_voucher_from_dict(
+    conn,
+    company_id: int,
+    voucher_type: str,
+    voucher_date: _date,
+    narration: str,
+    lines: list[dict],
+    fiscal_year: str,
+    created_by: int,
+    reference_no: str = None,
+    bank_txn_id: int = None,
+    status: str = "posted",
+) -> dict:
+    """
+    Thin asyncpg wrapper — create voucher + journal lines atomically.
+    lines: [{account_code, debit, credit, narration?}]
+    This is the v2 entry point used by transaction_service and main.py.
+    Wraps AccountingEngine.post_voucher() using direct asyncpg connection.
+    """
+    from decimal import Decimal
+
+    total_dr = sum(Decimal(str(l.get("debit", 0))) for l in lines)
+    total_cr = sum(Decimal(str(l.get("credit", 0))) for l in lines)
+
+    if status == "posted" and abs(total_dr - total_cr) > Decimal("0.01"):
+        raise ValueError(f"Unbalanced entry: DR={total_dr} CR={total_cr}")
+
+    # Generate voucher number
+    prefix_map = {
+        "journal": "JV", "payment": "PV", "receipt": "RV", "contra": "CV",
+        "sales": "SV", "purchase": "PUR", "debit_note": "DN", "credit_note": "CN",
+    }
+    prefix = prefix_map.get(voucher_type.lower(), "VCH")
+    fy_short = fiscal_year.replace("-", "")[2:]
+    count = await conn.fetchval(
+        "SELECT COUNT(*) FROM vouchers WHERE company_id=$1 AND voucher_type=$2 AND fiscal_year=$3",
+        company_id, voucher_type, fiscal_year,
+    )
+    voucher_no = f"{prefix}-{fy_short}-{(count or 0) + 1:04d}"
+
+    async with conn.transaction():
+        voucher_id = await conn.fetchval(
+            """
+            INSERT INTO vouchers
+                (company_id, voucher_no, voucher_type, voucher_date,
+                 narration, fiscal_year, status, created_by, reference_no, bank_txn_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            RETURNING id
+            """,
+            company_id, voucher_no, voucher_type, voucher_date,
+            narration, fiscal_year, status, created_by, reference_no, bank_txn_id,
+        )
+
+        for line in lines:
+            account_id = await conn.fetchval(
+                "SELECT id FROM accounts WHERE company_id=$1 AND code=$2",
+                company_id, line["account_code"],
+            )
+            if not account_id:
+                raise ValueError(f"Account code '{line['account_code']}' not found")
+            await conn.execute(
+                """
+                INSERT INTO journal_lines
+                    (voucher_id, account_id, narration, debit_amount, credit_amount, cost_center)
+                VALUES ($1,$2,$3,$4,$5,$6)
+                """,
+                voucher_id,
+                account_id,
+                line.get("narration", narration),
+                Decimal(str(line.get("debit", 0))),
+                Decimal(str(line.get("credit", 0))),
+                line.get("cost_center"),
+            )
+
+    return {
+        "voucher_id": voucher_id,
+        "voucher_no": voucher_no,
+        "status": status,
+        "total_debit": float(total_dr),
+        "total_credit": float(total_cr),
+    }
+
+
+async def post_voucher_draft(conn, company_id, voucher_type, voucher_date,
+                              narration, lines, fiscal_year, created_by,
+                              reference_no=None, bank_txn_id=None) -> dict:
+    """Convenience: post as draft (skips balance validation)."""
+    return await post_voucher_from_dict(
+        conn, company_id, voucher_type, voucher_date, narration,
+        lines, fiscal_year, created_by, reference_no, bank_txn_id, status="draft",
+    )
