@@ -45,6 +45,7 @@ from app.auth import (
     get_current_user, get_company_id, require_role
 )
 from app.middleware import register_middleware
+from app.routes.simple_mode import router as simple_router   # ← FIX: was never imported
 
 log = structlog.get_logger()
 
@@ -125,6 +126,7 @@ app = FastAPI(
 )
 
 register_middleware(app)
+app.include_router(simple_router)   # ← FIX: was missing → caused all /api/v1/simple/* 404s
 
 _allowed_origins = list(set(filter(None, [
     "http://localhost:3000",
