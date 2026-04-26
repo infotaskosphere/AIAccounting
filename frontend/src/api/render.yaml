@@ -1,6 +1,5 @@
-## render.yaml — Render deployment config
-## Defines both the frontend static site and backend web service
-## so /api/* requests from the frontend reach the backend correctly.
+## render.yaml — PUT THIS FILE AT THE ROOT OF YOUR REPO (not inside frontend/)
+## This fixes: /reports "Not Found", /bank "Not Found", all page refreshes breaking
 
 services:
 
@@ -12,8 +11,6 @@ services:
     buildCommand: pip install -r requirements-render.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: ANTHROPIC_API_KEY
-        sync: false          # set manually in Render dashboard
       - key: SECRET_KEY
         generateValue: true
       - key: DATABASE_URL
@@ -41,7 +38,7 @@ services:
       - type: rewrite
         source: /api/*
         destination: https://aiaccounting-api.onrender.com/api/*
-      # SPA fallback — serve index.html for all other routes
+      # SPA fallback — serve index.html for ALL routes (fixes /reports, /bank etc.)
       - type: rewrite
         source: /*
         destination: /index.html
