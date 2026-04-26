@@ -131,13 +131,22 @@ function parseDate_xls(raw) {
 async function parseXLSFile(file, voucherType) {
   const XLSX = await loadSheetJS()
   const buf  = await file.arrayBuffer()
-  const wb   = XLSX.read(new Uint8Array(buf), { type: 'array' })
-  const ws   = wb.Sheets[wb.SheetNames[0]]
+  const wb   = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: true })
+
+  // Try the first sheet that has recognisable accounting data
+  let ws = null
+  for (const name of wb.SheetNames) {
+    const candidate = wb.Sheets[name]
+    const text = XLSX.utils.sheet_to_csv(candidate)
+    if (/date/i.test(text) && /(amount|total|invoice)/i.test(text)) { ws = candidate; break }
+  }
+  if (!ws) ws = wb.Sheets[wb.SheetNames[0]]
+
   const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
-  // Find header row — look for 'date' AND ('party' OR 'invoice' OR 'amount')
+  // ── 1. Find header row (scan up to row 15) ───────────────────────────────
   let headerIdx = -1
-  for (let i = 0; i < Math.min(12, rows.length); i++) {
+  for (let i = 0; i < Math.min(15, rows.length); i++) {
     const row = rows[i].map(c => String(c).toLowerCase().trim())
     const hasDate   = row.some(c => c === 'date' || c.endsWith('date'))
     const hasParty  = row.some(c => c.includes('party') || c.includes('customer') || c.includes('vendor'))
@@ -162,11 +171,38 @@ async function parseXLSFile(file, voucherType) {
     narr:    col(['description','narration','remarks','particulars']),
   }
 
-  const g = (row, c) => c !== -1 && c < row.length ? String(row[c] || '').trim() : ''
-  const pAmt = s => parseFloat(String(s).replace(/[₹,\s]/g, '')) || 0
+  const g    = (row, c) => c !== -1 && c < row.length ? String(row[c] ?? '').trim() : ''
+  const pAmt = s => { const n = parseFloat(String(s).replace(/[₹,\s]/g, '')); return isFinite(n) ? n : 0 }
 
-  return rows.slice(headerIdx + 1)
-    .filter(r => r.some(c => c !== ''))
+  // ── 2. Helper: is this row a summary / totals / footer row? ──────────────
+  // A summary row has no valid date AND no valid party/invoice but has a number.
+  // Also catches rows where the date cell literally says "Total", "Grand Total" etc.
+  const isSummaryRow = (r) => {
+    const dateCell  = g(r, cols.date).toLowerCase()
+    const partyCell = cols.party  !== -1 ? g(r, cols.party).toLowerCase()  : ''
+    const invCell   = cols.invoice !== -1 ? g(r, cols.invoice).toLowerCase() : ''
+
+    // If the date cell is blank or a label word — it's a summary row
+    if (!dateCell || /^(total|grand|subtotal|sum|balance|net|closing)/.test(dateCell)) return true
+    // If a non-date column contains "Total" label (Finix puts "Total" in payment-status column)
+    const allCells = r.map(c => String(c).toLowerCase().trim())
+    if (allCells.some(c => /^(total|grand total|sub.?total)$/.test(c)) && !partyCell && !invCell) return true
+    return false
+  }
+
+  // ── 3. Helper: is this row cancelled? ─────────────────────────────────────
+  const isCancelled = (r) => {
+    const typeCell   = g(r, cols.type).toLowerCase()
+    const statusCell = g(r, cols.status).toLowerCase()
+    return typeCell.includes('cancel') || statusCell.includes('cancel')
+  }
+
+  // ── 4. Parse & filter data rows ───────────────────────────────────────────
+  const parsed = rows
+    .slice(headerIdx + 1)                         // skip header
+    .filter(r => r.some(c => c !== ''))           // skip fully blank rows
+    .filter(r => !isSummaryRow(r))                // ✅ FIX: skip totals/footer rows
+    .filter(r => !isCancelled(r))                 // ✅ FIX: skip cancelled transactions
     .map(r => ({
       date:    parseDate_xls(g(r, cols.date)),
       party:   g(r, cols.party),
@@ -179,27 +215,31 @@ async function parseXLSFile(file, voucherType) {
       status:  g(r, cols.status),
       narr:    g(r, cols.narr),
     }))
-    .filter(r => r.amount > 0)
-    .map(r => ({
-      voucher_type: (() => {
-        const t = r.txType.toLowerCase()
-        if (t.includes('sale'))     return 'sales'
-        if (t.includes('purchase')) return 'purchase'
-        if (t.includes('receipt'))  return 'receipt'
-        if (t.includes('payment'))  return 'payment'
-        return voucherType
-      })(),
-      date:      r.date,
-      reference: r.invoice,
-      party:     r.party,
-      narration: r.narr || `${r.txType || voucherType} - ${r.party} ${r.invoice ? `(${r.invoice})` : ''}`.trim(),
-      amount:    r.amount,
-      cgst:      r.cgst,
-      sgst:      r.sgst,
-      igst:      r.igst,
-      source:    'xls_import',
-      xls_status: r.status,
-    }))
+    .filter(r => r.amount > 0)                    // skip zero-amount rows (e.g. PDV-104)
+    .filter(r => r.date && r.date.length === 10)  // ✅ FIX: skip rows with invalid/unparseable dates
+
+  if (parsed.length === 0) throw new Error('No valid transactions found. Check that the file has Date, Party Name, and Amount columns with data.')
+
+  return parsed.map(r => ({
+    voucher_type: (() => {
+      const t = (r.txType || '').toLowerCase()
+      if (t.includes('sale'))     return 'sales'
+      if (t.includes('purchase')) return 'purchase'
+      if (t.includes('receipt'))  return 'receipt'
+      if (t.includes('payment'))  return 'payment'
+      return voucherType
+    })(),
+    date:       r.date,
+    reference:  r.invoice,
+    party:      r.party,
+    narration:  r.narr || `${r.txType || voucherType} - ${r.party}${r.invoice ? ` (${r.invoice})` : ''}`.trim(),
+    amount:     r.amount,
+    cgst:       r.cgst,
+    sgst:       r.sgst,
+    igst:       r.igst,
+    source:     'xls_import',
+    xls_status: r.status,
+  }))
 }
 
 // ── Journal Entry Modal ────────────────────────────────────────────────────
