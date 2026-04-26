@@ -15,6 +15,7 @@ function emptyCompanyData() {
     },
     vouchers: [],
     bankTransactions: [],
+    bankAccounts: [],             // ← registered bank accounts
     customAccountHeads: [],      // ← persisted custom account heads
     gst: {
       period: '',
