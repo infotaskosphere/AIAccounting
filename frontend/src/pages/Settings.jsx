@@ -1,5 +1,7 @@
 // src/pages/Settings.jsx — Full Settings for FINIX AI Accounting (India)
-import { useState } from 'react'
+// FIX: CompanySettings now reads from + writes to AuthContext (activeCompany / updateCompany)
+//      so changes are reflected immediately in Companies page, Topbar, etc.
+import { useState, useEffect } from 'react'
 import {
   Building2, Users, Shield, Bell, Palette, Database,
   Printer, Globe, Zap, FileText, IndianRupee, Receipt,
@@ -24,6 +26,7 @@ const SIDEBAR = [
   { key:'print',       label:'Print & Invoice',     icon:Printer,      desc:'Templates, e-invoice, e-way bill' },
 ]
 
+// ── Shared UI helpers ──────────────────────────────────────────
 function Section({ title, children, action }) {
   return (
     <div className="card" style={{ marginBottom:16 }}>
@@ -69,58 +72,106 @@ function Toggle2({ value, onChange, label }) {
   )
 }
 
-// ─── Company Profile ───────────────────────────────────────────
+// ─── Company Profile — FIXED ───────────────────────────────────
+// Reads initial values from activeCompany (which is persisted in localStorage via AuthContext).
+// On Save, calls updateCompany() so Companies page, Topbar, and all other consumers
+// immediately reflect the changes.
 function CompanySettings() {
   const { activeCompany, updateCompany } = useAuth()
-  const [form, setForm] = useState({
-    legalName: 'Acme Corp Private Limited',
-    tradeName: activeCompany?.name || '',
-    gstin: activeCompany?.gstin || '',
-    pan: 'AABCA1234C',
-    cin: 'U12345MH2020PTC123456',
-    tan: 'MUMA12345B',
-    address: '101, Business Park, Andheri East',
-    city: 'Mumbai',
-    state: 'Maharashtra',
-    pincode: '400069',
-    phone: '+91 98765 43210',
-    email: 'accounts@acmecorp.in',
-    website: 'www.acmecorp.in',
-    fyStart: '04', // April
-    currency: 'INR',
-    roundOff: true,
-  })
-  const set = (k,v) => setForm(f => ({...f,[k]:v}))
+
+  // Derive a stable key from company id so the form resets when you switch companies
+  const companyId = activeCompany?.id
+
+  const [form, setForm] = useState(() => buildForm(activeCompany))
+
+  // Re-sync form if the active company changes (e.g. user switches company mid-session)
+  useEffect(() => {
+    setForm(buildForm(activeCompany))
+  }, [companyId])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  const handleSave = () => {
+    if (!activeCompany) return
+    // Persist everything that AuthContext / Companies page cares about
+    updateCompany(activeCompany.id, {
+      name:     form.tradeName,   // trade name is the display name used everywhere
+      legalName: form.legalName,
+      gstin:    form.gstin,
+      pan:      form.pan,
+      cin:      form.cin,
+      tan:      form.tan,
+      address:  form.address,
+      city:     form.city,
+      state:    form.state,
+      pincode:  form.pincode,
+      phone:    form.phone,
+      email:    form.email,
+      website:  form.website,
+      fyStart:  form.fyStart,
+      currency: form.currency,
+      // Keep existing color / initials / type intact
+    })
+    toast.success('Company profile saved!')
+  }
+
+  const handleCancel = () => setForm(buildForm(activeCompany))
 
   return (
     <>
       <Section title="Business Identity">
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0 24px' }}>
-          <Field label="Legal Name"><input className="input" value={form.legalName} onChange={e=>set('legalName',e.target.value)}/></Field>
-          <Field label="Trade / Display Name"><input className="input" value={form.tradeName} onChange={e=>set('tradeName',e.target.value)}/></Field>
-          <Field label="GSTIN" hint="15-digit GST Identification Number"><input className="input" value={form.gstin} onChange={e=>set('gstin',e.target.value)} placeholder="22AAAAA0000A1Z5"/></Field>
-          <Field label="PAN"><input className="input" value={form.pan} onChange={e=>set('pan',e.target.value)} placeholder="AAAAA1234A"/></Field>
-          <Field label="CIN (if applicable)"><input className="input" value={form.cin} onChange={e=>set('cin',e.target.value)}/></Field>
-          <Field label="TAN"><input className="input" value={form.tan} onChange={e=>set('tan',e.target.value)}/></Field>
+          <Field label="Legal Name">
+            <input className="input" value={form.legalName} onChange={e=>set('legalName',e.target.value)}/>
+          </Field>
+          <Field label="Trade / Display Name">
+            <input className="input" value={form.tradeName} onChange={e=>set('tradeName',e.target.value)}/>
+          </Field>
+          <Field label="GSTIN" hint="15-digit GST Identification Number">
+            <input className="input" value={form.gstin} onChange={e=>set('gstin',e.target.value.toUpperCase())} placeholder="22AAAAA0000A1Z5" maxLength={15}/>
+          </Field>
+          <Field label="PAN">
+            <input className="input" value={form.pan} onChange={e=>set('pan',e.target.value.toUpperCase())} placeholder="AAAAA1234A" maxLength={10}/>
+          </Field>
+          <Field label="CIN (if applicable)">
+            <input className="input" value={form.cin} onChange={e=>set('cin',e.target.value)}/>
+          </Field>
+          <Field label="TAN">
+            <input className="input" value={form.tan} onChange={e=>set('tan',e.target.value)}/>
+          </Field>
         </div>
       </Section>
+
       <Section title="Address & Contact">
-        <Field label="Registered Address"><textarea className="input" rows={2} value={form.address} onChange={e=>set('address',e.target.value)} style={{ resize:'none' }}/></Field>
+        <Field label="Registered Address">
+          <textarea className="input" rows={2} value={form.address} onChange={e=>set('address',e.target.value)} style={{ resize:'none' }}/>
+        </Field>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'0 16px' }}>
-          <Field label="City"><input className="input" value={form.city} onChange={e=>set('city',e.target.value)}/></Field>
+          <Field label="City">
+            <input className="input" value={form.city} onChange={e=>set('city',e.target.value)}/>
+          </Field>
           <Field label="State">
             <select className="input" value={form.state} onChange={e=>set('state',e.target.value)}>
-              {['Andhra Pradesh','Assam','Bihar','Chhattisgarh','Delhi','Goa','Gujarat','Haryana','Himachal Pradesh','Jharkhand','Karnataka','Kerala','Madhya Pradesh','Maharashtra','Manipur','Meghalaya','Mizoram','Nagaland','Odisha','Punjab','Rajasthan','Sikkim','Tamil Nadu','Telangana','Tripura','Uttar Pradesh','Uttarakhand','West Bengal'].map(s=><option key={s}>{s}</option>)}
+              {STATES.map(s=><option key={s}>{s}</option>)}
             </select>
           </Field>
-          <Field label="Pincode"><input className="input" value={form.pincode} onChange={e=>set('pincode',e.target.value)} maxLength={6}/></Field>
+          <Field label="Pincode">
+            <input className="input" value={form.pincode} onChange={e=>set('pincode',e.target.value)} maxLength={6}/>
+          </Field>
         </div>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'0 16px' }}>
-          <Field label="Phone"><input className="input" value={form.phone} onChange={e=>set('phone',e.target.value)}/></Field>
-          <Field label="Email"><input className="input" type="email" value={form.email} onChange={e=>set('email',e.target.value)}/></Field>
-          <Field label="Website"><input className="input" value={form.website} onChange={e=>set('website',e.target.value)}/></Field>
+          <Field label="Phone">
+            <input className="input" value={form.phone} onChange={e=>set('phone',e.target.value)}/>
+          </Field>
+          <Field label="Email">
+            <input className="input" type="email" value={form.email} onChange={e=>set('email',e.target.value)}/>
+          </Field>
+          <Field label="Website">
+            <input className="input" value={form.website} onChange={e=>set('website',e.target.value)}/>
+          </Field>
         </div>
       </Section>
+
       <Section title="Financial Year & Currency">
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'0 24px' }}>
           <Field label="FY Start Month" hint="Indian FY typically starts April">
@@ -145,13 +196,37 @@ function CompanySettings() {
           </Field>
         </div>
       </Section>
+
       <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
-        <button className="btn btn-secondary">Cancel</button>
-        <button className="btn btn-primary" onClick={()=>toast.success('Company profile saved!')}><Save size={13}/> Save Changes</button>
+        <button className="btn btn-secondary" onClick={handleCancel}>Cancel</button>
+        <button className="btn btn-primary" onClick={handleSave}><Save size={13}/> Save Changes</button>
       </div>
     </>
   )
 }
+
+// Build initial form state from the activeCompany object stored in AuthContext
+function buildForm(co) {
+  return {
+    legalName: co?.legalName || co?.name || '',
+    tradeName: co?.name || '',
+    gstin:    co?.gstin   || '',
+    pan:      co?.pan     || '',
+    cin:      co?.cin     || '',
+    tan:      co?.tan     || '',
+    address:  co?.address || '',
+    city:     co?.city    || '',
+    state:    co?.state   || 'Maharashtra',
+    pincode:  co?.pincode || '',
+    phone:    co?.phone   || '',
+    email:    co?.email   || '',
+    website:  co?.website || '',
+    fyStart:  co?.fyStart || '04',
+    currency: co?.currency|| 'INR',
+  }
+}
+
+const STATES = ['Andhra Pradesh','Assam','Bihar','Chhattisgarh','Delhi','Goa','Gujarat','Haryana','Himachal Pradesh','Jharkhand','Karnataka','Kerala','Madhya Pradesh','Maharashtra','Manipur','Meghalaya','Mizoram','Nagaland','Odisha','Punjab','Rajasthan','Sikkim','Tamil Nadu','Telangana','Tripura','Uttar Pradesh','Uttarakhand','West Bengal']
 
 // ─── Users & Roles ─────────────────────────────────────────────
 function UsersSettings() {
@@ -170,10 +245,9 @@ function UsersSettings() {
     { id:3, name:'Priya Mehta',   email:'priya@acmecorp.in',    role:'auditor',    status:'active', lastLogin:'Yesterday' },
     { id:4, name:'Suresh Patel',  email:'suresh@acmecorp.in',   role:'view_only',  status:'invited',lastLogin:'Never' },
   ])
-  const [modal, setModal] = useState(null) // null | 'add' | {user}
+  const [modal, setModal] = useState(null)
   const [form, setForm] = useState({ name:'', email:'', role:'accountant', sendInvite:true })
   const set = (k,v) => setForm(f=>({...f,[k]:v}))
-  const [showPerms, setShowPerms] = useState(null)
 
   const handleSave = () => {
     if (!form.name || !form.email) { toast.error('Name and email required'); return }
@@ -271,7 +345,6 @@ function UsersSettings() {
         </div>
       </Section>
 
-      {/* Modal */}
       {modal && (
         <div className="overlay" onClick={()=>setModal(null)}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
