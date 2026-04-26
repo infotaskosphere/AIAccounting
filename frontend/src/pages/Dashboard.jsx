@@ -10,9 +10,9 @@ import {
   Wallet, BarChart2, AlertTriangle, Info, CheckCircle,
   ArrowRight, X, Plus, Zap, Activity, FileText,
   IndianRupee, Receipt, Users, RefreshCw, Upload,
-  Brain, Trash2, PlusCircle, Table2
+  Brain, Trash2, PlusCircle, Table2, Edit2, AlertCircle, Shield
 } from 'lucide-react'
-import { loadCompanyData, addVoucher, addVouchers, computeFinancials } from '../api/companyStore'
+import { loadCompanyData, addVoucher, addVouchers, updateVoucher, deleteVoucher, computeFinancials } from '../api/companyStore'
 import { fmt, fmtCr, fmtDate } from '../utils/format'
 import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
